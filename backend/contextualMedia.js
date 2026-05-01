@@ -165,29 +165,30 @@ function extractContextKeywords(lessonContext = {}) {
 }
 
 function getEnglishTags(lessonContext = {}, instruction = "") {
-  // Use ONLY instruction for search - ignore lesson context entirely
-  // This ensures user search is precise and not polluted by lesson metadata
-  console.log(`[getEnglishTags] Input: instruction="${instruction.slice(0, 40)}" (${instruction.length} chars)`);
+  if (!instruction.trim()) return [];
   
-  if (instruction.trim()) {
-    const instrLower = instruction.toLowerCase();
-    const instrNorm = instrLower.replace(/^ال/u, "").replace(/ ال/gu, " ").replace(/\s+/g, " ").trim();
-    console.log(`[getEnglishTags] Checking ${ENGLISH_HINTS.length} hints against: "${instrLower.slice(0, 40)}"`);
-    
-    for (let i = 0; i < ENGLISH_HINTS.length; i++) {
-      const hint = ENGLISH_HINTS[i];
-      const matches = hint.match.filter(term => instrLower.includes(term) || instrNorm.includes(term));
-      if (matches.length > 0) {
-        console.log(`[getEnglishTags] ✓ Hit at index ${i}: matched "${matches[0]}" → tags: "${hint.tags.slice(0, 2).join(", ")}"`);
+  // NFC-normalize both sides to handle Unicode differences from browser vs file
+  const instrNFC = instruction.normalize("NFC").toLowerCase();
+  // Strip Arabic definite article
+  const instrStripped = instrNFC.replace(/^ال/u, "").replace(/ ال/gu, " ").replace(/\s+/g, " ").trim();
+  
+  for (const hint of ENGLISH_HINTS) {
+    for (const term of hint.match) {
+      const termNFC = term.normalize("NFC").toLowerCase();
+      if (instrNFC.includes(termNFC) || instrStripped.includes(termNFC)) {
+        console.log(`[getEnglishTags] matched "${termNFC}" → "${hint.tags[0]}"`);
         return hint.tags;
       }
     }
-    console.log(`[getEnglishTags] ✗ No hint matched, returning generic`);
-    return ["education", "study", "learning"];
   }
-  // If instruction empty, don't search at all
-  console.log(`[getEnglishTags] Empty instruction`);
-  return [];
+  
+  // No Arabic match → check if instruction looks like an English term directly
+  if (/^[a-z0-9 ]+$/i.test(instruction.trim())) {
+    return [instruction.trim(), "education", "diagram"];
+  }
+  
+  console.log(`[getEnglishTags] no match for "${instrNFC.slice(0, 30)}"`);
+  return ["education", "study", "learning"];
 }
 
 function buildLessonContextDocument(lessonContext = {}) {
@@ -412,108 +413,153 @@ async function searchPexelsImages({ lessonContext = {}, instruction = "", catego
 }
 
 async function searchWikiImages({ lessonContext = {}, instruction = "", category = "diagram", maxResults = 8 }) {
-  const { arabicQueries, englishQueries, resolvedCategory, profile, userQuery, hasSpecificTopic } = buildMediaSearchPhrases({ lessonContext, instruction, category, limit: 4 });
-  // Decision: use English Wikipedia when we have a specific topic match, Arabic otherwise
-  // Arabic Wikipedia is good for Arabic content; English Wikipedia has more images overall
-  const useEnglish = hasSpecificTopic;
-  // Always prefer the user's actual query as the primary search term
-  const query = useEnglish
-    ? englishQueries[0]
-    : (arabicQueries[0] || userQuery || cleanText(lessonContext.title || instruction || "تعليم", 80));
-  const lang = useEnglish ? "en" : "ar";
-  console.log("[contextualMedia] Wikipedia query", { query, lang, category: resolvedCategory, userQuery: userQuery.slice(0, 50) });
+  const { resolvedCategory, profile, englishTags, topicTag } = buildMediaSearchPhrases({ lessonContext, instruction, category, limit: 4 });
 
-  const endpoint = new URL(`https://${lang}.wikipedia.org/w/api.php`);
-  endpoint.searchParams.set("action", "query");
-  endpoint.searchParams.set("generator", "search");
-  endpoint.searchParams.set("gsrsearch", query);
-  endpoint.searchParams.set("gsrlimit", String(Math.min(maxResults * 2, 16)));
-  endpoint.searchParams.set("prop", "pageimages|info");
-  endpoint.searchParams.set("pithumbsize", "900");
-  endpoint.searchParams.set("pilimit", String(Math.min(maxResults, 12)));
-  endpoint.searchParams.set("inprop", "url");
-  endpoint.searchParams.set("format", "json");
-  endpoint.searchParams.set("origin", "*");
+  // Always use English Wikipedia because it has far more images  
+  // Use the specific English topic tag when available, otherwise use category keywords
+  const searchTerms = topicTag
+    ? [topicTag, englishTags.slice(0, 2).join(" ")]
+    : [{
+        photo: "educational science",
+        diagram: "scientific diagram labeled",
+        illustration: "educational illustration",
+        infographic: "educational infographic",
+      }[resolvedCategory]];
 
-  const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Wikipedia API error: ${response.status} ${text.slice(0, 140)}`);
+  for (const query of searchTerms) {
+    console.log("[contextualMedia] Wikipedia EN query", { query, category: resolvedCategory });
+    try {
+      const endpoint = new URL("https://en.wikipedia.org/w/api.php");
+      endpoint.searchParams.set("action", "query");
+      endpoint.searchParams.set("generator", "search");
+      endpoint.searchParams.set("gsrsearch", query);
+      endpoint.searchParams.set("gsrlimit", String(Math.min(maxResults * 2, 20)));
+      endpoint.searchParams.set("prop", "pageimages|info");
+      endpoint.searchParams.set("pithumbsize", "900");
+      endpoint.searchParams.set("pilimit", String(Math.min(maxResults + 4, 16)));
+      endpoint.searchParams.set("inprop", "url");
+      endpoint.searchParams.set("format", "json");
+      endpoint.searchParams.set("origin", "*");
+
+      const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+      if (!response.ok) continue;
+
+      const data = await response.json();
+      const pages = Object.values(data.query?.pages || {});
+      const items = pages.map((page) => ({
+        id: `wiki-${resolvedCategory}-${page.pageid}`,
+        title: cleanText(page.title || query, 80),
+        caption: `${profile.arabicLabel} من ويكيبيديا`,
+        query,
+        source: "stock",
+        category: resolvedCategory,
+        searchMode: topicTag ? "topic" : "fallback",
+        providerLabel: "Wikipedia",
+        previewType: "image",
+        url: page.thumbnail?.source || "",
+        externalUrl: page.fullurl || "",
+      })).filter((item) => item.url);
+
+      if (items.length >= 2) {
+        console.log(`[searchWikiImages] "${query}" → ${items.length} results`);
+        return items.slice(0, maxResults);
+      }
+    } catch (e) {
+      console.error(`[searchWikiImages] "${query}" failed:`, e.message);
+    }
   }
-
-  const data = await response.json();
-  const pages = Object.values(data.query?.pages || {});
-  return pages.map((page, index) => ({
-    id: `wiki-${resolvedCategory}-${page.pageid}`,
-    title: cleanText(page.title || query, 80),
-    caption: `${profile.arabicLabel} من ويكيبيديا`,
-    query,
-    source: "stock",
-    category: resolvedCategory,
-    searchMode: "fallback",
-    providerLabel: "Wikipedia Contextual",
-    previewType: "image",
-    url: page.thumbnail?.source || "",
-    externalUrl: page.fullurl || "",
-  })).filter((item) => item.url).slice(0, maxResults);
+  return [];
 }
 
 async function searchWikimediaCommons({ lessonContext = {}, instruction = "", category = "diagram", maxResults = 8 }) {
-  const { commonsQuery, resolvedCategory, profile, strategy } = buildMediaSearchPhrases({ lessonContext, instruction, category, limit: 4 });
-  console.log("[contextualMedia] Wikimedia Commons query", { query: commonsQuery, category: resolvedCategory });
-
-  const endpoint = new URL("https://commons.wikimedia.org/w/api.php");
-  endpoint.searchParams.set("action", "query");
-  endpoint.searchParams.set("generator", "search");
-  endpoint.searchParams.set("gsrsearch", commonsQuery);
-  endpoint.searchParams.set("gsrnamespace", "6"); // File: namespace = actual image files
-  endpoint.searchParams.set("gsrlimit", String(Math.min(maxResults * 3, 30)));
-  endpoint.searchParams.set("prop", "imageinfo");
-  endpoint.searchParams.set("iiprop", "url|mime|size");
-  endpoint.searchParams.set("format", "json");
-  endpoint.searchParams.set("origin", "*");
-
-  const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Wikimedia Commons API error: ${response.status} ${text.slice(0, 140)}`);
-  }
-
-  const data = await response.json();
-  const pages = Object.values(data.query?.pages || {});
+  const { resolvedCategory, profile, strategy, englishTags, topicTag } = buildMediaSearchPhrases({ lessonContext, instruction, category, limit: 4 });
   const preferMime = strategy.commonsPreferMime;
+  
+  // Build a ranked list of queries to try in order
+  const queries = [];
+  
+  // Strategy 1: If we have an English topic match, use it (most specific)
+  if (topicTag && englishTags.length > 0) {
+    queries.push(`${englishTags.slice(0, 2).join(" ")} ${strategy.englishModifiers[0]}`);
+    queries.push(`${topicTag} ${strategy.englishModifiers[0]}`);
+    queries.push(topicTag);
+  }
+  
+  // Strategy 2: Use category modifiers + first English tag
+  if (topicTag) {
+    queries.push(`${topicTag} diagram`);
+    queries.push(`${topicTag} illustration`);
+  }
+  
+  // Strategy 3: Category-specific fallback (always try this last)
+  queries.push({
+    photo: "educational photograph science",
+    diagram: "educational diagram labeled scientific",
+    illustration: "educational illustration vector art",
+    infographic: "educational infographic data visualization",
+  }[resolvedCategory]);
+  
+  const uniqueQueries = [...new Set(queries.filter(Boolean))];
+  console.log(`[searchWikimediaCommons] Trying ${uniqueQueries.length} queries: ${uniqueQueries.slice(0, 2).join(" | ")}`);
 
-  // Sort: preferred mime type first, then other images
-  const sorted = pages.sort((a, b) => {
-    const aMatch = (a.imageinfo?.[0]?.mime || "") === preferMime ? 0 : 1;
-    const bMatch = (b.imageinfo?.[0]?.mime || "") === preferMime ? 0 : 1;
-    return aMatch - bMatch;
-  });
+  async function tryQuery(query) {
+    const endpoint = new URL("https://commons.wikimedia.org/w/api.php");
+    endpoint.searchParams.set("action", "query");
+    endpoint.searchParams.set("generator", "search");
+    endpoint.searchParams.set("gsrsearch", query);
+    endpoint.searchParams.set("gsrnamespace", "6");
+    endpoint.searchParams.set("gsrlimit", String(Math.min(maxResults * 3, 30)));
+    endpoint.searchParams.set("prop", "imageinfo");
+    endpoint.searchParams.set("iiprop", "url|mime|size");
+    endpoint.searchParams.set("format", "json");
+    endpoint.searchParams.set("origin", "*");
 
-  return sorted
-    .map((page) => {
+    const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+    if (!response.ok) return [];
+    const data = await response.json();
+    const pages = Object.values(data.query?.pages || {});
+    
+    const sorted = pages.sort((a, b) => {
+      const aMatch = (a.imageinfo?.[0]?.mime || "") === preferMime ? 0 : 1;
+      const bMatch = (b.imageinfo?.[0]?.mime || "") === preferMime ? 0 : 1;
+      return aMatch - bMatch;
+    });
+
+    return sorted.map((page) => {
       const info = page.imageinfo?.[0];
       if (!info?.url) return null;
-      const mime = info.mime || "";
-      if (!mime.startsWith("image/")) return null;
-      // Exclude tiny thumbnails (< 50KB)
+      if (!info.mime?.startsWith("image/")) return null;
       if (info.size && info.size < 50000) return null;
       return {
         id: `commons-${resolvedCategory}-${page.pageid}`,
-        title: cleanText((page.title || commonsQuery).replace(/^File:/i, ""), 80),
+        title: cleanText((page.title || query).replace(/^File:/i, ""), 80),
         caption: `${profile.arabicLabel} من Wikimedia Commons`,
-        query: commonsQuery,
+        query,
         source: "stock",
         category: resolvedCategory,
-        searchMode: "fallback",
+        searchMode: topicTag ? "topic" : "fallback",
         providerLabel: "Wikimedia Commons",
         previewType: "image",
         url: info.url,
         externalUrl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title || "")}`,
       };
-    })
-    .filter(Boolean)
-    .slice(0, maxResults);
+    }).filter(Boolean);
+  }
+
+  for (const q of uniqueQueries) {
+    try {
+      const results = await tryQuery(q);
+      if (results.length >= 3) {
+        console.log(`[searchWikimediaCommons] "${q}" → ${results.length} results`);
+        return results.slice(0, maxResults);
+      }
+    } catch (e) {
+      console.error(`[searchWikimediaCommons] Query failed: "${q}"`, e.message);
+    }
+  }
+  
+  console.log(`[searchWikimediaCommons] All queries returned <3 results`);
+  return [];
 }
 
 function uniqueByUrl(items) {
