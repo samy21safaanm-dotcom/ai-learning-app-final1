@@ -658,38 +658,63 @@ function ContextualTextModal({ lessonContext, blocks, onClose, onAdd, defaultMod
 }
 
 function ImageAssetCard({ item, selected, onSelect }) {
-  const [imgLoaded, setImgLoaded] = React.useState(false);
-  const [imgFailed, setImgFailed] = React.useState(false);
-  const isAiGenerated = item.searchMode === "pollinations" || item.source === "ai";
+  const [imgState, setImgState] = React.useState("loading"); // loading | loaded | failed
+  const isAi = item.source === "ai" || item.searchMode === "pollinations";
 
   return (
-    <div className={`ctx-media-card${selected ? " selected" : ""}`} onClick={() => onSelect(item)}>
-      {/* Never render SVG placeholders - always use real image URLs */}
-      <div style={{ position: "relative" }}>
-        {isAiGenerated && !imgLoaded && !imgFailed && (
-          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg,#6d28d9,#4f46e5)", color: "#fff", borderRadius: 10, fontSize: 12, gap: 6, minHeight: 100 }}>
-            <div style={{ width: 20, height: 20, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-            <span>جارٍ التوليد…</span>
+    <div
+      className={`ctx-media-card${selected ? " selected" : ""}`}
+      onClick={() => onSelect(item)}
+      style={{ borderRadius: 14, overflow: "hidden", background: "#fff", border: `2px solid ${selected ? "#7c3aed" : "#e2e8f0"}`, cursor: "pointer", transition: "all .15s ease", boxShadow: selected ? "0 0 0 3px rgba(124,58,237,.2)" : "none" }}
+    >
+      {/* Thumbnail area */}
+      <div style={{ position: "relative", aspectRatio: "16/10", overflow: "hidden", background: isAi ? "linear-gradient(135deg,#6d28d9,#4f46e5)" : "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {/* AI Loading spinner */}
+        {isAi && imgState === "loading" && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#fff", zIndex: 2 }}>
+            <div style={{ width: 26, height: 26, border: "3px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+            <span style={{ fontSize: 11, fontWeight: 700 }}>يتم التوليد…</span>
+            <span style={{ fontSize: 10, opacity: 0.75 }}>تصبر 10–30 ثانية</span>
           </div>
         )}
+        {/* AI failed — show open-in-browser */}
+        {isAi && imgState === "failed" && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#fff", padding: 12, zIndex: 2, textAlign: "center" }}>
+            <span style={{ fontSize: 22 }}>🎨</span>
+            <span style={{ fontSize: 11, fontWeight: 700, lineHeight: 1.5 }}>الصورة تحتاج<br/>متصفح لعرضها</span>
+            <a
+              href={item.url} target="_blank" rel="noreferrer"
+              onClick={e => e.stopPropagation()}
+              style={{ padding: "5px 14px", background: "rgba(255,255,255,0.22)", border: "1px solid rgba(255,255,255,0.5)", color: "#fff", borderRadius: 8, fontSize: 11, fontWeight: 700, textDecoration: "none" }}
+            >🔗 فتح الصورة</a>
+          </div>
+        )}
+        {/* Stock failed */}
+        {!isAi && imgState === "failed" && (
+          <div style={{ fontSize: 28, opacity: 0.4 }}>🖼️</div>
+        )}
         <img
-          className="ctx-thumb"
-          src={item.url || item.thumbnailUrl || fallbackImageData(item.title || "Image")}
+          src={item.url || item.thumbnailUrl}
           alt={item.title}
-          style={{ opacity: isAiGenerated && !imgLoaded ? 0 : 1, transition: "opacity 0.3s" }}
-          onLoad={() => setImgLoaded(true)}
-          onError={(event) => {
-            console.error("[ImageAssetCard] image load failed:", { id: item.id, url: item.url });
-            setImgFailed(true);
-            setImgLoaded(true);
-            event.currentTarget.src = fallbackImageData(item.title || "Image");
-          }}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: imgState === "loaded" ? 1 : 0, transition: "opacity 0.4s" }}
+          onLoad={() => setImgState("loaded")}
+          onError={() => setImgState("failed")}
         />
+        {/* Source badge */}
+        <div style={{ position: "absolute", top: 6, right: 6, padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, background: isAi ? "#7c3aed" : "rgba(0,0,0,0.55)", color: "#fff", zIndex: 3 }}>
+          {isAi ? "⚡ AI" : (item.providerLabel || "Stock")}
+        </div>
       </div>
-      <div className="ctx-media-copy">
-        <h4 className="ctx-media-title">{item.title}</h4>
-        <p className="ctx-media-caption">{item.caption}</p>
-        {isAiGenerated && !imgFailed && <p style={{ fontSize: 11, color: "#7c3aed", marginTop: 4, fontWeight: 600 }}>⚡ AI · Pollinations</p>}
+      {/* Caption */}
+      <div style={{ padding: "9px 12px 11px" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#1e1b4b", lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {item.title || "صورة"}
+        </div>
+        {isAi && imgState === "failed" && (
+          <a href={item.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ display: "block", marginTop: 5, padding: "4px 0", color: "#7c3aed", fontSize: 11, fontWeight: 700, textDecoration: "none" }}>
+            🔗 عرض الصورة المولدة ↗
+          </a>
+        )}
       </div>
     </div>
   );
@@ -699,26 +724,29 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
   const contextPayload = useMemo(() => buildLessonContextPayload(lessonContext, blocks), [lessonContext, blocks]);
   const [tab, setTab] = useState("stock");
   const [category, setCategory] = useState("diagram");
-  // START EMPTY - user must type search query
   const [instruction, setInstruction] = useState("");
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [directUrl, setDirectUrl] = useState("");
+  const [hasSearched, setHasSearched] = useState(false);
+  const inputRef = useRef(null);
   const imageLibrary = useMemo(() => blocks.filter((block) => block.type === "image"), [blocks]);
 
-  const run = async (targetTab = tab, targetCategory = category, searchQuery = instruction) => {
+  // Focus input on mount
+  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 100); }, []);
+
+  const doSearch = async (targetTab = tab, targetCategory = category, searchQuery = instruction) => {
     if (targetTab === "url" || targetTab === "upload" || targetTab === "library") return;
     if (!searchQuery.trim()) {
-      setErrorMessage("الرجاء إدخال كلمة للبحث");
-      setItems([]);
+      setErrorMessage("اكتب كلمة أو موضوعاً في حقل البحث أولاً");
       return;
     }
     setLoading(true);
     setErrorMessage("");
+    setHasSearched(true);
     try {
-      console.log("[ContextualImageModal] Search", { source: targetTab, category: targetCategory, query: searchQuery });
       const data = await requestContextualGeneration({
         kind: "image",
         lessonContext: contextPayload,
@@ -726,13 +754,10 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
         source: targetTab === "ai" ? "ai" : "stock",
         category: targetCategory,
       });
-      console.log("[ContextualImageModal] Results", { count: data.items?.length });
       const nextItems = data.items || [];
       setItems(nextItems);
       setSelected(nextItems[0] || null);
-      if (!nextItems.length) {
-        setErrorMessage(`لا توجد نتائج لـ "${searchQuery}" في فئة ${targetCategory}. جرّب كلمة أخرى.`);
-      }
+      if (!nextItems.length) setErrorMessage(`لا توجد نتائج لـ "${searchQuery}". جرّب كلمة أخرى.`);
     } catch (error) {
       setErrorMessage(error.message || "تعذر تنفيذ طلب البحث");
       setItems([]);
@@ -741,10 +766,13 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
     setLoading(false);
   };
 
-  useEffect(() => {
-    run(tab);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const handleTabChange = (value) => {
+    setTab(value);
+    setItems([]);
+    setErrorMessage("");
+    setHasSearched(false);
+    setSelected(null);
+  };
 
   const handleUpload = (event) => {
     const file = event.target.files?.[0];
@@ -758,87 +786,153 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
     reader.readAsDataURL(file);
   };
 
+  const CATEGORIES = [["diagram","📊 مخطط"], ["photo","📷 صورة"], ["illustration","🎨 رسم"], ["infographic","📋 إنفوجرافيك"]];
+  const isSearchTab = tab === "stock" || tab === "ai";
+
   return (
     <ModalShell
-      title="مستكشف الصور الذكي"
-      subtitle="ابحث أو ولّد صورًا ورسومات توضيحية مرتبطة بموضوع الدرس الحالي، ثم عاينها بحجم كبير قبل الإدراج."
+      title="🖼️ مستكشف الصور الذكي"
+      subtitle="ابحث في ملايين الصور أو ولّد صوراً بالذكاء الاصطناعي — اكتب الموضوع واضغط بحث"
       lessonContext={lessonContext}
       blocks={blocks}
       onClose={onClose}
     >
       <div className="ctx-layout">
         <div className="ctx-card">
-          <div className="ctx-segmented">
-            {[["stock", "Stock"], ["ai", "AI"], ["library", "المكتبة"], ["url", "رابط"], ["upload", "رفع"]].map(([value, label]) => (
-              <button key={value} className={tab === value ? "active" : ""} onClick={() => { setTab(value); if (value === "stock" || value === "ai") run(value); }}>{label}</button>
+
+          {/* ── Tabs ── */}
+          <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+            {[["stock","🔍 Stock"], ["ai","⚡ AI توليد"], ["library","📚 مكتبتي"], ["url","🔗 رابط"], ["upload","⬆️ رفع"]].map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => handleTabChange(value)}
+                style={{
+                  padding: "7px 14px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "Cairo, Arial",
+                  background: tab === value ? (value === "ai" ? "#6d28d9" : "#4f46e5") : "#f1f5f9",
+                  color: tab === value ? "#fff" : "#475569",
+                  transition: "all .15s"
+                }}
+              >{label}</button>
             ))}
           </div>
 
-          <div className="ctx-segmented">
-            {["stock", "ai"].includes(tab) && (
-              <>Most relevant results will appear after search</>
-            )}
-          </div>
-          {(tab === "stock" || tab === "ai") && (
-            <>
-              <div className="ctx-segmented" style={{ marginBottom: 10 }}>
-                {[["diagram", "مخطط"], ["photo", "صورة"], ["illustration", "رسم توضيحي"], ["infographic", "إنفوجرافيك"]].map(([value, label]) => (
-                  <button key={value} className={category === value ? "active" : ""} onClick={() => setCategory(value)}>{label}</button>
-                ))}
-              </div>
-              <input
-                className="ctx-input"
-                type="text"
-                value={instruction}
-                onChange={(event) => setInstruction(event.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && instruction.trim()) {
-                    run(tab, category, instruction);
-                  }
-                }}
-                placeholder="اكتب كلمة للبحث عن صور... (مثال: دورة دموية، طاقة شمسية، كيمياء)"
-                style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 14, fontFamily: "Cairo, Arial" }}
-              />
-              {tab === "ai" && (
-                <div style={{ margin: "8px 0 4px", padding: "8px 12px", borderRadius: 8, background: "#ede9fe", color: "#5b21b6", fontSize: 12, fontWeight: 600 }}>
-                  ⚡ AI يولّد صوراً بناءً على كلمتك (Pollinations) — قد تحتاج 10–30 ثانية
-                </div>
-              )}
-              <div className="ctx-actions" style={{ marginTop: 12, marginBottom: 16 }}>
-                <button
-                  className="ctx-button primary"
-                  onClick={() => run(tab, category, instruction)}
-                  disabled={loading || !instruction.trim()}
-                >
-                  {loading ? "جارٍ البحث..." : tab === "ai" ? "🔍 توليد AI" : "🔍 بحث استكشافي"}
-                </button>
-              </div>
-              {errorMessage && <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid #fecaca", background: "#fef2f2", color: "#b91c1c", fontSize: 13 }}>{errorMessage}</div>}
-              {loading ? <LoadingGrid /> : <div className="ctx-grid">{items.map((item) => <ImageAssetCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={setSelected} />)}</div>}
-            </>
-          )}
-
-          {tab === "library" && (
-            <div className="ctx-grid">
-              {imageLibrary.length === 0 && <div className="ctx-inline-note">لا توجد صور مضافة بعد. يمكنك الرفع أو إنشاء نتائج جديدة أولاً.</div>}
-              {imageLibrary.map((item) => <ImageAssetCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={setSelected} />)}
+          {/* ── AI notice ── */}
+          {tab === "ai" && (
+            <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "linear-gradient(135deg,#ede9fe,#dbeafe)", border: "1px solid #c4b5fd", fontSize: 12, fontWeight: 700, color: "#5b21b6", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 18 }}>⚡</span>
+              <span>Pollinations AI يولّد صوراً حقيقية من كلمتك — تحتاج 15–40 ثانية للظهور. إذا ظهرت رمادية افتح الرابط ↗</span>
             </div>
           )}
 
-          {tab === "url" && (
+          {/* ── Search area (stock & ai) ── */}
+          {isSearchTab && (
             <>
-              <input className="ctx-input" value={directUrl} onChange={(event) => setDirectUrl(event.target.value)} placeholder="ألصق رابط صورة مباشر" />
-              <div className="ctx-actions" style={{ marginTop: 12 }}>
-                <button className="ctx-button primary" onClick={() => setSelected({ id: `url-${Date.now()}`, title: instruction || "صورة من رابط", caption: "تمت إضافتها من رابط مباشر", url: directUrl })} disabled={!directUrl.trim()}>معاينة</button>
+              {/* Category pills */}
+              <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+                {CATEGORIES.map(([value, label]) => (
+                  <button
+                    key={value}
+                    onClick={() => setCategory(value)}
+                    style={{ padding: "5px 12px", borderRadius: 16, border: `1.5px solid ${category === value ? "#7c3aed" : "#e2e8f0"}`, background: category === value ? "#ede9fe" : "#fff", color: category === value ? "#7c3aed" : "#64748b", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "Cairo, Arial" }}
+                  >{label}</button>
+                ))}
               </div>
+
+              {/* Search row */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={instruction}
+                  onChange={e => setInstruction(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") doSearch(tab, category, instruction); }}
+                  placeholder={tab === "ai" ? "مثال: دورة دموية، طاقة شمسية، ذكاء اصطناعي..." : "مثال: قلب، كيمياء، هندسة..."}
+                  style={{ flex: 1, padding: "11px 14px", borderRadius: 12, border: "2px solid #e2e8f0", fontSize: 14, fontFamily: "Cairo, Arial", outline: "none", transition: "border .15s" }}
+                  onFocus={e => e.target.style.borderColor = "#7c3aed"}
+                  onBlur={e => e.target.style.borderColor = "#e2e8f0"}
+                />
+                <button
+                  onClick={() => doSearch(tab, category, instruction)}
+                  disabled={loading || !instruction.trim()}
+                  style={{ padding: "11px 20px", borderRadius: 12, border: "none", background: loading ? "#a78bfa" : (tab === "ai" ? "#6d28d9" : "#4f46e5"), color: "#fff", fontWeight: 800, fontSize: 14, cursor: loading ? "not-allowed" : "pointer", fontFamily: "Cairo, Arial", whiteSpace: "nowrap", minWidth: 110 }}
+                >
+                  {loading ? "⏳ جارٍ..." : tab === "ai" ? "⚡ توليد" : "🔍 بحث"}
+                </button>
+              </div>
+
+              {/* Error */}
+              {errorMessage && (
+                <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, border: "1px solid #fecaca", background: "#fef2f2", color: "#b91c1c", fontSize: 13, fontWeight: 600 }}>
+                  ⚠️ {errorMessage}
+                </div>
+              )}
+
+              {/* Empty state */}
+              {!loading && !hasSearched && (
+                <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8" }}>
+                  <div style={{ fontSize: 48, marginBottom: 12 }}>{tab === "ai" ? "🎨" : "🔍"}</div>
+                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6, color: "#64748b" }}>
+                    {tab === "ai" ? "ولّد صورة بالذكاء الاصطناعي" : "ابحث في ملايين الصور"}
+                  </div>
+                  <div style={{ fontSize: 13 }}>اكتب موضوعاً واضغط {tab === "ai" ? "⚡ توليد" : "🔍 بحث"}</div>
+                </div>
+              )}
+
+              {/* Results grid */}
+              {loading && <LoadingGrid />}
+              {!loading && hasSearched && items.length > 0 && (
+                <>
+                  {tab === "ai" && (
+                    <div style={{ marginBottom: 10, fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>
+                      ⚡ {items.length} صور AI — قد تأخذ وقتاً للظهور. انقر على الصورة لمعاينتها أو افتح الرابط ↗
+                    </div>
+                  )}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+                    {items.map(item => (
+                      <ImageAssetCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={setSelected} />
+                    ))}
+                  </div>
+                </>
+              )}
             </>
           )}
 
+          {/* ── Library tab ── */}
+          {tab === "library" && (
+            <div>
+              {imageLibrary.length === 0
+                ? <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8", fontSize: 14 }}>📭 لا توجد صور في مكتبتك بعد</div>
+                : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+                    {imageLibrary.map(item => <ImageAssetCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={setSelected} />)}
+                  </div>
+              }
+            </div>
+          )}
+
+          {/* ── URL tab ── */}
+          {tab === "url" && (
+            <div>
+              <div style={{ marginBottom: 8, fontSize: 13, color: "#64748b" }}>ألصق رابط صورة مباشراً (JPG, PNG, WebP...)</div>
+              <input
+                className="ctx-input"
+                value={directUrl}
+                onChange={e => setDirectUrl(e.target.value)}
+                placeholder="https://example.com/image.jpg"
+              />
+              <div className="ctx-actions" style={{ marginTop: 12 }}>
+                <button className="ctx-button primary"
+                  onClick={() => setSelected({ id: `url-${Date.now()}`, title: "صورة من رابط", caption: directUrl, url: directUrl })}
+                  disabled={!directUrl.trim()}>معاينة</button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Upload tab ── */}
           {tab === "upload" && (
             <label className="ctx-upload">
               <input type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} />
               <div>
-                <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 6 }}>ارفع صورة من جهازك</div>
+                <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 6 }}>⬆️ ارفع صورة من جهازك</div>
                 <div className="ctx-inline-note">تظل المعاينة مطلوبة قبل الإدراج داخل الدرس.</div>
               </div>
             </label>
@@ -848,7 +942,7 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
         <PreviewPanel
           item={selected}
           emptyLabel="اختر صورة من الشبكة أو أنشئ نتائج سياقية جديدة، وستظهر المعاينة هنا قبل الإدراج."
-          onRegenerate={() => run(tab)}
+          onRegenerate={() => doSearch(tab, category, instruction)}
           onReset={onClose}
           onInsert={() => selected && onAdd({ type: "image", title: selected.title, caption: selected.caption, url: selected.url, svg: selected.svg, source: selected.source })}
           accent="success"
