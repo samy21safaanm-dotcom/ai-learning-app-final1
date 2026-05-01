@@ -664,31 +664,28 @@ function ImageAssetCard({ item, selected, onSelect }) {
 
   return (
     <div className={`ctx-media-card${selected ? " selected" : ""}`} onClick={() => onSelect(item)}>
-      {item.svg ? (
-        <div dangerouslySetInnerHTML={{ __html: item.svg }} />
-      ) : (
-        <div style={{ position: "relative" }}>
-          {isAiGenerated && !imgLoaded && !imgFailed && (
-            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg,#6d28d9,#4f46e5)", color: "#fff", borderRadius: 10, fontSize: 12, gap: 6, minHeight: 100 }}>
-              <div style={{ width: 20, height: 20, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-              <span>جارٍ التوليد…</span>
-            </div>
-          )}
-          <img
-            className="ctx-thumb"
-            src={item.url || item.thumbnailUrl || fallbackImageData(item.title || "Image")}
-            alt={item.title}
-            style={{ opacity: isAiGenerated && !imgLoaded ? 0 : 1, transition: "opacity 0.3s" }}
-            onLoad={() => setImgLoaded(true)}
-            onError={(event) => {
-              console.error("[ImageAssetCard] image load failed:", item);
-              setImgFailed(true);
-              setImgLoaded(true);
-              event.currentTarget.src = fallbackImageData(item.title || "Image");
-            }}
-          />
-        </div>
-      )}
+      {/* Never render SVG placeholders - always use real image URLs */}
+      <div style={{ position: "relative" }}>
+        {isAiGenerated && !imgLoaded && !imgFailed && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg,#6d28d9,#4f46e5)", color: "#fff", borderRadius: 10, fontSize: 12, gap: 6, minHeight: 100 }}>
+            <div style={{ width: 20, height: 20, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+            <span>جارٍ التوليد…</span>
+          </div>
+        )}
+        <img
+          className="ctx-thumb"
+          src={item.url || item.thumbnailUrl || fallbackImageData(item.title || "Image")}
+          alt={item.title}
+          style={{ opacity: isAiGenerated && !imgLoaded ? 0 : 1, transition: "opacity 0.3s" }}
+          onLoad={() => setImgLoaded(true)}
+          onError={(event) => {
+            console.error("[ImageAssetCard] image load failed:", { id: item.id, url: item.url });
+            setImgFailed(true);
+            setImgLoaded(true);
+            event.currentTarget.src = fallbackImageData(item.title || "Image");
+          }}
+        />
+      </div>
       <div className="ctx-media-copy">
         <h4 className="ctx-media-title">{item.title}</h4>
         <p className="ctx-media-caption">{item.caption}</p>
@@ -702,7 +699,8 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
   const contextPayload = useMemo(() => buildLessonContextPayload(lessonContext, blocks), [lessonContext, blocks]);
   const [tab, setTab] = useState("stock");
   const [category, setCategory] = useState("diagram");
-  const [instruction, setInstruction] = useState(lessonContext.title || "");
+  // Initialize instruction with lesson title so first request is strong (not empty)
+  const [instruction, setInstruction] = useState(lessonContext.title || "صورة توضيحية تعليمية");
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(false);

@@ -165,19 +165,27 @@ function extractContextKeywords(lessonContext = {}) {
 }
 
 function getEnglishTags(lessonContext = {}, instruction = "") {
+  // Priority 1: instruction text alone (user's explicit search takes priority over lesson context)
+  if (instruction.trim()) {
+    const instrLower = instruction.toLowerCase();
+    const instrNorm = instrLower.replace(/^ال/u, "").replace(/ ال/gu, " ").replace(/\s+/g, " ").trim();
+    for (const hint of ENGLISH_HINTS) {
+      if (hint.match.some((term) => instrLower.includes(term) || instrNorm.includes(term))) {
+        console.log(`[getEnglishTags] Matched via instruction: "${hint.tags[0]}"`);
+        return hint.tags;
+      }
+    }
+  }
+  // Priority 2: full context (title + summary + instruction)
   const source = `${lessonContext.title || ""} ${lessonContext.summary || ""} ${instruction}`.toLowerCase();
-  // Also normalize by stripping the Arabic definite article "ال" so multi-word terms match
-  // e.g. "الدورة الدموية" → "دورة دموية" for correct matching against ENGLISH_HINTS
-  const normalized = source
-    .replace(/^ال/u, "")
-    .replace(/ ال/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalized = source.replace(/^ال/u, "").replace(/ ال/gu, " ").replace(/\s+/g, " ").trim();
   for (const hint of ENGLISH_HINTS) {
     if (hint.match.some((term) => source.includes(term) || normalized.includes(term))) {
+      console.log(`[getEnglishTags] Matched via context: "${hint.tags[0]}"`);
       return hint.tags;
     }
   }
+  console.log(`[getEnglishTags] No match → generic fallback`);
   return ["education", "study", "learning"];
 }
 
@@ -271,13 +279,18 @@ function buildMediaSearchPhrases({ lessonContext = {}, instruction = "", categor
   ).slice(0, limit);
 
   // Wikimedia Commons query:
-  // Use the topic alone (no category modifier appended) so Commons finds topically relevant
-  // files first. Appending "labeled diagram" limits the result pool and causes unrelated
-  // popular diagrams (e.g. computer hardware) to rank high.
-  // When we know the English topic use it; otherwise use the Arabic text directly.
+  // When we have a topic match: use topic + category modifier for specificity
+  // When no topic match: use fallback strategy based on category to get different results
+  const fallbackCommonsQueries = hasSpecificTopic ? null : {
+    photo: "educational photograph",
+    diagram: "educational diagram infographic",
+    illustration: "educational illustration art drawing",
+    infographic: "data visualization poster infographic",
+  }[resolvedCategory];
+
   const commonsQuery = topicTag
-    ? `${englishTags.slice(0, 2).join(" ")}`
-    : userQuery.slice(0, 80);
+    ? `${englishTags.slice(0, 2).join(" ")} ${strategy.englishModifiers[0]}`
+    : (fallbackCommonsQueries || userQuery.slice(0, 80));
 
   console.log(`[buildMediaSearchPhrases] category=${resolvedCategory} userQuery="${userQuery.slice(0, 50)}" topicTag="${topicTag || "(none)"}" hintsMatched=${hasSpecificTopic} commonsQ="${commonsQuery}"`);
 
@@ -313,34 +326,26 @@ function buildSvgCard({ title, subtitle, points = [], accent = "#7c3aed", tag = 
 }
 
 function createContextualImageCandidates({ lessonContext = {}, instruction = "", source = "stock", category = "general" }) {
-  const { arabicQueries, englishQueries, resolvedCategory, profile } = buildMediaSearchPhrases({ lessonContext, instruction, category, limit: 6 });
+  const { arabicQueries, englishQueries, resolvedCategory, profile, strategy } = buildMediaSearchPhrases({ lessonContext, instruction, category, limit: 6 });
   const topPoints = (lessonContext.sections || [])
     .slice(0, 4)
     .map((section) => section.heading)
     .filter(Boolean);
 
   if (source === "ai") {
-    const baseTitle = cleanText(instruction || lessonContext.title || "مشهد تعليمي", 48);
-    const variants = [
-      { accent: "#7c3aed", tag: "AI ILLUSTRATION", subtitle: `${cleanText(lessonContext.title, 70)} · ${cleanText(category, 30)}` },
-      { accent: "#059669", tag: "INFO VISUAL", subtitle: cleanText(lessonContext.summary, 84) || "شرح بصري مختصر" },
-      { accent: "#0ea5e9", tag: "LESSON CARD", subtitle: cleanText(instruction, 84) || "بطاقة تعليمية سياقية" },
-      { accent: "#f59e0b", tag: "SMART POSTER", subtitle: arabicQueries[1] || baseTitle },
-    ];
-    return variants.map((variant, index) => ({
-      id: `ai-${resolvedCategory}-image-${index + 1}`,
-      title: `${baseTitle} ${index + 1}`,
-      caption: `${variant.subtitle} (${profile.arabicLabel})`,
-      source: "ai",
-      previewType: "svg",
-      category: resolvedCategory,
-      svg: buildSvgCard({ title: baseTitle, subtitle: variant.subtitle, points: topPoints, accent: variant.accent, tag: variant.tag }),
-    }));
+    // AI SVG fallback should NEVER be used - always return Pollinations URLs from searchAiImageCandidates
+    // This function is only called when getContextualImageCandidates AI request completely fails
+    // Return empty array so UI knows AI generation failed
+    console.log("[createContextualImageCandidates] AI fallback called - this should only happen on complete failure");
+    return [];
   }
 
   // Unsplash final fallback: use category-specific suffix for better type differentiation
+  // Include category in search to ensure photo/diagram/illustration/infographic get visibly different results
   return englishQueries.map((query, index) => {
-    const unsplashQuery = `${query},${strategy.unsplashSuffix}`;
+    // Combine query with category-specific suffix to improve differentiation
+    const categoryHint = strategy.unsplashSuffix || "education";
+    const unsplashQuery = `${query},${categoryHint}`;
     const seed = Math.floor(Math.random() * 9999) + index * 1000;
     return {
       id: `stock-${resolvedCategory}-unsplash-${seed}`,
@@ -609,11 +614,17 @@ async function getContextualImageCandidates({ lessonContext = {}, instruction = 
     console.log("[contextualMedia] AI image request", { category: resolvedCategory, instruction: cleanText(instruction, 120), maxResults: aiMaxResults });
     try {
       const aiItems = await searchAiImageCandidates({ lessonContext, instruction, category: resolvedCategory, maxResults: aiMaxResults });
-      if (aiItems?.length) return uniqueByUrl(aiItems).slice(0, aiMaxResults);
+      if (aiItems?.length) {
+        console.log(`[contextualMedia] AI success: returned ${aiItems.length} Pollinations items`);
+        return uniqueByUrl(aiItems).slice(0, aiMaxResults);
+      }
+      console.log("[contextualMedia] AI returned empty array, using SVG fallback");
     } catch (error) {
       console.error("[contextualMedia] AI image generation failed:", error.message);
     }
-    return createContextualImageCandidates({ lessonContext, instruction, source, category: resolvedCategory }).slice(0, maxResults);
+    const fallback = createContextualImageCandidates({ lessonContext, instruction, source, category: resolvedCategory }).slice(0, maxResults);
+    console.log(`[contextualMedia] AI fallback: returning ${fallback.length} SVG placeholders`);
+    return fallback;
   }
 
   console.log("[contextualMedia] Stock image request", { category: resolvedCategory, instruction: cleanText(instruction, 120) });
@@ -632,9 +643,10 @@ async function getContextualImageCandidates({ lessonContext = {}, instruction = 
   try {
     const commonsItems = await searchWikimediaCommons({ lessonContext, instruction, category: resolvedCategory, maxResults });
     if (commonsItems?.length) {
-      console.log(`[contextualMedia] Wikimedia Commons returned ${commonsItems.length} results`);
+      console.log(`[contextualMedia] Wikimedia Commons returned ${commonsItems.length} results (category=${resolvedCategory})`);
       return uniqueByUrl(commonsItems).slice(0, maxResults);
     }
+    console.log("[contextualMedia] Wikimedia Commons returned no results, trying Wikipedia");
   } catch (error) {
     console.error("[contextualMedia] Wikimedia Commons search failed:", error.message);
   }
