@@ -167,16 +167,22 @@ function extractContextKeywords(lessonContext = {}) {
 function getEnglishTags(lessonContext = {}, instruction = "") {
   // Use ONLY instruction for search - ignore lesson context entirely
   // This ensures user search is precise and not polluted by lesson metadata
+  console.log(`[getEnglishTags] Input: instruction="${instruction.slice(0, 40)}" (${instruction.length} chars)`);
+  
   if (instruction.trim()) {
     const instrLower = instruction.toLowerCase();
     const instrNorm = instrLower.replace(/^ال/u, "").replace(/ ال/gu, " ").replace(/\s+/g, " ").trim();
-    for (const hint of ENGLISH_HINTS) {
-      if (hint.match.some((term) => instrLower.includes(term) || instrNorm.includes(term))) {
-        console.log(`[getEnglishTags] Instruction matched: "${hint.tags[0]}"`);
+    console.log(`[getEnglishTags] Checking ${ENGLISH_HINTS.length} hints against: "${instrLower.slice(0, 40)}"`);
+    
+    for (let i = 0; i < ENGLISH_HINTS.length; i++) {
+      const hint = ENGLISH_HINTS[i];
+      const matches = hint.match.filter(term => instrLower.includes(term) || instrNorm.includes(term));
+      if (matches.length > 0) {
+        console.log(`[getEnglishTags] ✓ Hit at index ${i}: matched "${matches[0]}" → tags: "${hint.tags.slice(0, 2).join(", ")}"`);
         return hint.tags;
       }
     }
-    console.log(`[getEnglishTags] No hint match for instruction, returning generic`);
+    console.log(`[getEnglishTags] ✗ No hint matched, returning generic`);
     return ["education", "study", "learning"];
   }
   // If instruction empty, don't search at all
@@ -248,8 +254,12 @@ function buildMediaSearchPhrases({ lessonContext = {}, instruction = "", categor
 
   // Try domain-specific English tags from ENGLISH_HINTS
   const englishTags = getEnglishTags(lessonContext, instruction);
+  console.log(`[buildMediaSearchPhrases] englishTags from instruction="${instruction.slice(0, 30)}"`, englishTags);
+  
   const hasSpecificTopic = !(englishTags[0] === "education" && englishTags[1] === "study");
   const topicTag = hasSpecificTopic ? englishTags[0] : null;
+  
+  console.log(`[buildMediaSearchPhrases] hasSpecificTopic=${hasSpecificTopic} topicTag="${topicTag}"`);
 
   // Arabic queries: instruction is the FIRST and most important query
   const arabicTerms = extractContextKeywords({ ...lessonContext, instruction });
@@ -274,20 +284,21 @@ function buildMediaSearchPhrases({ lessonContext = {}, instruction = "", categor
   ).slice(0, limit);
 
   // Wikimedia Commons query:
-  // When we have a topic match: use topic + category modifier for specificity
-  // When no topic match: use fallback strategy based on category to get different results
-  const fallbackCommonsQueries = hasSpecificTopic ? null : {
-    photo: "educational photograph",
-    diagram: "educational diagram infographic",
-    illustration: "educational illustration art drawing",
-    infographic: "data visualization poster infographic",
-  }[resolvedCategory];
-
+  // Priority 1: If topic matched from hints, use topic + category modifier
+  // Priority 2: If no topic match but user gave instruction, use instruction directly as search
+  // Priority 3: Last resort fallback to category-based search only
   const commonsQuery = topicTag
     ? `${englishTags.slice(0, 2).join(" ")} ${strategy.englishModifiers[0]}`
-    : (fallbackCommonsQueries || userQuery.slice(0, 80));
+    : userQuery.trim() // Use user's instruction directly when no topic match
+      ? userQuery.slice(0, 80)
+      : {
+          photo: "educational photograph",
+          diagram: "educational diagram infographic",
+          illustration: "educational illustration art drawing",
+          infographic: "data visualization poster infographic",
+        }[resolvedCategory];
 
-  console.log(`[buildMediaSearchPhrases] category=${resolvedCategory} userQuery="${userQuery.slice(0, 50)}" topicTag="${topicTag || "(none)"}" hintsMatched=${hasSpecificTopic} commonsQ="${commonsQuery}"`);
+  console.log(`[buildMediaSearchPhrases] Final→ category=${resolvedCategory} userQuery="${userQuery.slice(0, 50)}" commonsQuery="${commonsQuery}"`);
 
   return { arabicQueries, englishQueries, commonsQuery, resolvedCategory, profile, strategy, topicTag, englishTags, userQuery, hasSpecificTopic };
 }
