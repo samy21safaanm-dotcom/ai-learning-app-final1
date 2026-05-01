@@ -165,28 +165,23 @@ function extractContextKeywords(lessonContext = {}) {
 }
 
 function getEnglishTags(lessonContext = {}, instruction = "") {
-  // Priority 1: instruction text alone (user's explicit search takes priority over lesson context)
+  // Use ONLY instruction for search - ignore lesson context entirely
+  // This ensures user search is precise and not polluted by lesson metadata
   if (instruction.trim()) {
     const instrLower = instruction.toLowerCase();
     const instrNorm = instrLower.replace(/^ال/u, "").replace(/ ال/gu, " ").replace(/\s+/g, " ").trim();
     for (const hint of ENGLISH_HINTS) {
       if (hint.match.some((term) => instrLower.includes(term) || instrNorm.includes(term))) {
-        console.log(`[getEnglishTags] Matched via instruction: "${hint.tags[0]}"`);
+        console.log(`[getEnglishTags] Instruction matched: "${hint.tags[0]}"`);
         return hint.tags;
       }
     }
+    console.log(`[getEnglishTags] No hint match for instruction, returning generic`);
+    return ["education", "study", "learning"];
   }
-  // Priority 2: full context (title + summary + instruction)
-  const source = `${lessonContext.title || ""} ${lessonContext.summary || ""} ${instruction}`.toLowerCase();
-  const normalized = source.replace(/^ال/u, "").replace(/ ال/gu, " ").replace(/\s+/g, " ").trim();
-  for (const hint of ENGLISH_HINTS) {
-    if (hint.match.some((term) => source.includes(term) || normalized.includes(term))) {
-      console.log(`[getEnglishTags] Matched via context: "${hint.tags[0]}"`);
-      return hint.tags;
-    }
-  }
-  console.log(`[getEnglishTags] No match → generic fallback`);
-  return ["education", "study", "learning"];
+  // If instruction empty, don't search at all
+  console.log(`[getEnglishTags] Empty instruction`);
+  return [];
 }
 
 function buildLessonContextDocument(lessonContext = {}) {

@@ -699,8 +699,8 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
   const contextPayload = useMemo(() => buildLessonContextPayload(lessonContext, blocks), [lessonContext, blocks]);
   const [tab, setTab] = useState("stock");
   const [category, setCategory] = useState("diagram");
-  // Initialize instruction with lesson title so first request is strong (not empty)
-  const [instruction, setInstruction] = useState(lessonContext.title || "صورة توضيحية تعليمية");
+  // START EMPTY - user must type search query
+  const [instruction, setInstruction] = useState("");
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -708,28 +708,33 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
   const [directUrl, setDirectUrl] = useState("");
   const imageLibrary = useMemo(() => blocks.filter((block) => block.type === "image"), [blocks]);
 
-  const run = async (targetTab = tab, targetCategory = category) => {
+  const run = async (targetTab = tab, targetCategory = category, searchQuery = instruction) => {
     if (targetTab === "url" || targetTab === "upload" || targetTab === "library") return;
+    if (!searchQuery.trim()) {
+      setErrorMessage("الرجاء إدخال كلمة للبحث");
+      setItems([]);
+      return;
+    }
     setLoading(true);
     setErrorMessage("");
     try {
-      console.log("[ContextualImageModal] Request", { source: targetTab, category: targetCategory, instruction });
+      console.log("[ContextualImageModal] Search", { source: targetTab, category: targetCategory, query: searchQuery });
       const data = await requestContextualGeneration({
         kind: "image",
         lessonContext: contextPayload,
-        instruction,
+        instruction: searchQuery,
         source: targetTab === "ai" ? "ai" : "stock",
         category: targetCategory,
       });
-      console.log("[ContextualImageModal] Response", data);
+      console.log("[ContextualImageModal] Results", { count: data.items?.length });
       const nextItems = data.items || [];
       setItems(nextItems);
       setSelected(nextItems[0] || null);
       if (!nextItems.length) {
-        setErrorMessage(`لا توجد نتائج لهذا النوع (${targetCategory}) حالياً. جرّب صياغة توجيه أدق.`);
+        setErrorMessage(`لا توجد نتائج لـ "${searchQuery}" في فئة ${targetCategory}. جرّب كلمة أخرى.`);
       }
     } catch (error) {
-      setErrorMessage(error.message || "تعذر تنفيذ طلب توليد الصور");
+      setErrorMessage(error.message || "تعذر تنفيذ طلب البحث");
       setItems([]);
       setSelected(null);
     }
@@ -769,21 +774,44 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
             ))}
           </div>
 
+          <div className="ctx-segmented">
+            {["stock", "ai"].includes(tab) && (
+              <>Most relevant results will appear after search</>
+            )}
+          </div>
           {(tab === "stock" || tab === "ai") && (
             <>
               <div className="ctx-segmented" style={{ marginBottom: 10 }}>
-                {[["diagram", "مخطط"], ["photo", "صورة"], ["illustration", "Illustration"], ["infographic", "Infographic"]].map(([value, label]) => (
-                  <button key={value} className={category === value ? "active" : ""} onClick={() => { setCategory(value); run(tab, value); }}>{label}</button>
+                {[["diagram", "مخطط"], ["photo", "صورة"], ["illustration", "رسم توضيحي"], ["infographic", "إنفوجرافيك"]].map(([value, label]) => (
+                  <button key={value} className={category === value ? "active" : ""} onClick={() => setCategory(value)}>{label}</button>
                 ))}
               </div>
-              <textarea className="ctx-textarea" value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="مثال: أنشئ صورة توضيحية تشرح مكونات الحاسب مع إبراز المعالج والذاكرة ووحدات الإدخال" />
+              <input
+                className="ctx-input"
+                type="text"
+                value={instruction}
+                onChange={(event) => setInstruction(event.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && instruction.trim()) {
+                    run(tab, category, instruction);
+                  }
+                }}
+                placeholder="اكتب كلمة للبحث عن صور... (مثال: دورة دموية، طاقة شمسية، كيمياء)"
+                style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 14, fontFamily: "Cairo, Arial" }}
+              />
               {tab === "ai" && (
                 <div style={{ margin: "8px 0 4px", padding: "8px 12px", borderRadius: 8, background: "#ede9fe", color: "#5b21b6", fontSize: 12, fontWeight: 600 }}>
-                  ⚡ تبويب AI يولّد صوراً بالذكاء الاصطناعي (Pollinations) — قد تحتاج 10–30 ثانية لكل صورة للظهور أول مرة.
+                  ⚡ AI يولّد صوراً بناءً على كلمتك (Pollinations) — قد تحتاج 10–30 ثانية
                 </div>
               )}
               <div className="ctx-actions" style={{ marginTop: 12, marginBottom: 16 }}>
-                <button className="ctx-button primary" onClick={() => run(tab)} disabled={loading || !instruction.trim()}>{loading ? "جارٍ البحث..." : tab === "ai" ? "توليد رسومات AI" : "بحث سياقي"}</button>
+                <button
+                  className="ctx-button primary"
+                  onClick={() => run(tab, category, instruction)}
+                  disabled={loading || !instruction.trim()}
+                >
+                  {loading ? "جارٍ البحث..." : tab === "ai" ? "🔍 توليد AI" : "🔍 بحث استكشافي"}
+                </button>
               </div>
               {errorMessage && <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid #fecaca", background: "#fef2f2", color: "#b91c1c", fontSize: 13 }}>{errorMessage}</div>}
               {loading ? <LoadingGrid /> : <div className="ctx-grid">{items.map((item) => <ImageAssetCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={setSelected} />)}</div>}
