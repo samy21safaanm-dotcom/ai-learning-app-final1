@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import LessonPage from "./LessonPage";
+import LoginPage from "./LoginPage";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function formatSize(bytes) {
@@ -369,7 +370,24 @@ function TextModal({ file, onClose }) {
       const res = await fetch("/translate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: extractedText }) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "فشل الترجمة");
-      setTranslatedText(data.translatedText);
+
+      const translated = String(data.translatedText || "").trim();
+      if (!translated) {
+        throw new Error("لم يتم استلام نص مترجم");
+      }
+
+      const sourceNorm = String(extractedText || "").replace(/\s+/g, " ").trim();
+      const translatedNorm = translated.replace(/\s+/g, " ").trim();
+      const hasArabic = /[\u0600-\u06FF]/.test(translated);
+      const unchanged = sourceNorm && translatedNorm && sourceNorm === translatedNorm;
+
+      setTranslatedText(translated);
+
+      if (unchanged && !hasArabic) {
+        setError(data.warning || "تعذرت الترجمة حالياً. تأكد من اتصال الإنترنت أو مزود الترجمة.");
+        return;
+      }
+
       setTab("arabic");
     } catch (e) { setError(e.message || "خطأ في الترجمة"); }
     finally { setTranslating(false); }
@@ -519,6 +537,7 @@ function FeatureCard({ icon, title, desc, color, badge }) {
 
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function App() {
+  const [user, setUser] = useState(null);
   const [files, setFiles] = useState([]);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -571,6 +590,10 @@ export default function App() {
       setFiles((prev) => prev.filter((f) => f.key !== key));
     } catch (err) { setError(err.message); }
   };
+
+  if (!user) {
+    return <LoginPage onLogin={setUser} />;
+  }
 
   return (
     <div style={styles.page}>

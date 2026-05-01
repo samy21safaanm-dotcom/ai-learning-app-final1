@@ -2,6 +2,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
+const fs = require("fs");
+const path = require("path");
 const mammoth = require("mammoth");
 const pdfParse = require("pdf-parse");
 const Anthropic = require("@anthropic-ai/sdk");
@@ -17,9 +19,19 @@ const { TranslateClient, TranslateTextCommand } = require("@aws-sdk/client-trans
 const { BedrockRuntimeClient, InvokeModelCommand } = require("@aws-sdk/client-bedrock-runtime");
 const { PollyClient, SynthesizeSpeechCommand } = require("@aws-sdk/client-polly");
 const { initDb, insertFile, deleteFile, listFiles } = require("./db");
+const {
+  buildLessonContextDocument,
+  createContextualChartPreview,
+  createContextualImageCandidates,
+  getContextualImageCandidates,
+  createContextualVideoCandidates,
+  getContextualVideoCandidates,
+  createFallbackTextResult,
+} = require("./contextualMedia");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const LOCAL_UPLOADS_DIR = path.join(__dirname, "local-uploads");
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 const DEFAULT_ANTHROPIC_MODEL_FALLBACKS = [
   "claude-opus-4-7",
@@ -78,11 +90,96 @@ const polly = new PollyClient(awsClientConfig);
 
 app.use(cors());
 app.use(express.json());
+fs.mkdirSync(LOCAL_UPLOADS_DIR, { recursive: true });
+app.use("/local-uploads", express.static(LOCAL_UPLOADS_DIR));
+
+function isAwsAuthOrConfigError(err) {
+  const msg = String(err?.message || "").toLowerCase();
+  return (
+    msg.includes("access key") ||
+    msg.includes("credentials") ||
+    msg.includes("security token") ||
+    msg.includes("s3 bucket") ||
+    msg.includes("not configured")
+  );
+}
+
+function makeLocalFileName(originalname) {
+  const safeBase = path.basename(String(originalname || "file")).replace(/[^a-zA-Z0-9._-]/g, "_");
+  return `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safeBase}`;
+}
+
+function makeLocalFileKey(localName) {
+  return `local-uploads/${localName}`;
+}
+
+function makeLocalFileUrl(localName) {
+  return `http://localhost:${PORT}/local-uploads/${encodeURIComponent(localName)}`;
+}
+
+function parseLocalFileNameFromKey(key) {
+  const value = String(key || "");
+  if (!value.startsWith("local-uploads/")) return null;
+  const localName = value.slice("local-uploads/".length);
+  return localName ? path.basename(localName) : null;
+}
+
+async function listLocalFiles() {
+  const names = await fs.promises.readdir(LOCAL_UPLOADS_DIR);
+  const out = [];
+  for (const localName of names) {
+    const fullPath = path.join(LOCAL_UPLOADS_DIR, localName);
+    const stat = await fs.promises.stat(fullPath);
+    if (!stat.isFile()) continue;
+    out.push({
+      key: makeLocalFileKey(localName),
+      name: localName.replace(/^\d+-\d+-/, ""),
+      size: stat.size,
+      uploadedAt: stat.mtime,
+      mimeType: null,
+      url: makeLocalFileUrl(localName),
+      storage: "local",
+    });
+  }
+  out.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+  return out;
+}
 
 app.get("/", (req, res) => {
   res.json({
     message: "Backend is running",
-    endpoints: ["/files", "/upload", "/extract", "/translate", "/generate-lesson", "/health"],
+    endpoints: ["/files", "/upload", "/extract", "/translate", "/generate-lesson", "/generate-contextual-content", "/media-provider-status", "/health"],
+  });
+});
+
+app.get("/media-provider-status", (req, res) => {
+  const youtubeLive = Boolean(String(process.env.YOUTUBE_API_KEY || "").trim());
+  const vimeoLive = Boolean(String(process.env.VIMEO_ACCESS_TOKEN || "").trim());
+  const stockLive = Boolean(String(process.env.STOCK_IMAGE_API_KEY || "").trim());
+  const aiLive = Boolean(String(process.env.AI_IMAGE_API_URL || "").trim());
+
+  res.json({
+    youtube: {
+      mode: youtubeLive ? "live" : "fallback",
+      configured: youtubeLive,
+      label: youtubeLive ? "YouTube API Live" : "YouTube Fallback Contextual",
+    },
+    vimeo: {
+      mode: vimeoLive ? "live" : "fallback",
+      configured: vimeoLive,
+      label: vimeoLive ? "Vimeo API Live" : "Vimeo Fallback Contextual",
+    },
+    stockImage: {
+      mode: stockLive ? "live" : "fallback",
+      configured: stockLive,
+      label: stockLive ? "Pexels API Live" : "Stock Fallback Contextual",
+    },
+    aiImage: {
+      mode: aiLive ? "live" : "fallback",
+      configured: aiLive,
+      label: aiLive ? "AI Image API Live" : "AI Fallback Generator",
+    },
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -1042,49 +1139,77 @@ async function extractText(buffer, mimetype) {
 app.post("/upload", memUpload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-  const { buffer, originalname, mimetype, size } = req.file;
-  const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-  const key = `uploads/${unique}-${originalname}`;
-
-  // Upload buffer to S3
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      Body: buffer,
-      ContentType: mimetype,
-    })
-  );
-
-  // Extract text from buffer
-  let extractedText = "";
-  let extractError = null;
   try {
-    extractedText = await extractText(buffer, mimetype);
+    const { buffer, originalname, mimetype, size } = req.file;
+    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    const key = `uploads/${unique}-${originalname}`;
+    let storage = "s3";
+    let persistedKey = key;
+    let fileUrl = null;
+
+    if (BUCKET) {
+      try {
+        await s3.send(
+          new PutObjectCommand({
+            Bucket: BUCKET,
+            Key: key,
+            Body: buffer,
+            ContentType: mimetype,
+          })
+        );
+
+        fileUrl = await getSignedUrl(
+          s3,
+          new GetObjectCommand({ Bucket: BUCKET, Key: key }),
+          { expiresIn: 3600 }
+        );
+      } catch (s3Err) {
+        if (!isAwsAuthOrConfigError(s3Err)) {
+          throw s3Err;
+        }
+        console.error("/upload s3 fallback to local:", s3Err.message);
+        storage = "local";
+      }
+    } else {
+      storage = "local";
+    }
+
+    if (storage === "local") {
+      const localName = makeLocalFileName(originalname);
+      const fullPath = path.join(LOCAL_UPLOADS_DIR, localName);
+      await fs.promises.writeFile(fullPath, buffer);
+      persistedKey = makeLocalFileKey(localName);
+      fileUrl = makeLocalFileUrl(localName);
+    }
+
+    // Extract text from buffer
+    let extractedText = "";
+    let extractError = null;
+    try {
+      extractedText = await extractText(buffer, mimetype);
+    } catch (err) {
+      extractError = "Text extraction failed: " + err.message;
+    }
+
+    // Persist metadata to RDS (no-op if DB not configured)
+    await insertFile({ key: persistedKey, name: originalname, size, mimeType: mimetype });
+
+    return res.json({
+      message: "File uploaded successfully",
+      file: {
+        key: persistedKey,
+        name: originalname,
+        size,
+        url: fileUrl,
+        storage,
+        extractedText,
+        extractError,
+      },
+    });
   } catch (err) {
-    extractError = "Text extraction failed: " + err.message;
+    console.error("/upload error:", err);
+    return res.status(500).json({ error: "Failed to upload file: " + err.message });
   }
-
-  const signedUrl = await getSignedUrl(
-    s3,
-    new GetObjectCommand({ Bucket: BUCKET, Key: key }),
-    { expiresIn: 3600 }
-  );
-
-  // Persist metadata to RDS (no-op if DB not configured)
-  await insertFile({ key, name: originalname, size, mimeType: mimetype });
-
-  res.json({
-    message: "File uploaded successfully",
-    file: {
-      key,
-      name: originalname,
-      size,
-      url: signedUrl,
-      extractedText,
-      extractError,
-    },
-  });
 });
 
 // --- Extract-only: no S3 storage ---
@@ -1103,6 +1228,18 @@ app.post("/extract", memUpload.single("file"), async (req, res) => {
 app.get("/extract/:key(*)", async (req, res) => {
   const key = req.params.key;
   try {
+    const localName = parseLocalFileNameFromKey(key);
+    if (localName) {
+      const fullPath = path.join(LOCAL_UPLOADS_DIR, localName);
+      const buffer = await fs.promises.readFile(fullPath);
+      const lower = localName.toLowerCase();
+      const mimetype = lower.endsWith(".pdf")
+        ? "application/pdf"
+        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      const text = await extractText(buffer, mimetype);
+      return res.json({ key, text });
+    }
+
     const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
 
     // Stream to buffer
@@ -1122,20 +1259,44 @@ app.get("/extract/:key(*)", async (req, res) => {
 // --- List files (RDS when available, S3 fallback) ---
 app.get("/files", async (req, res) => {
   try {
-    if (!BUCKET) {
-      throw new Error("S3 bucket name is not configured (S3_BUCKET_NAME missing)");
+    // Try RDS first
+    let dbRows = null;
+    try {
+      dbRows = await listFiles();
+    } catch (dbErr) {
+      console.error("/files db list error:", dbErr.message);
+      dbRows = null;
     }
 
-    // Try RDS first
-    const dbRows = await listFiles();
+    if (!BUCKET) {
+      // Do not hard-fail the UI when object storage is not configured.
+      if (Array.isArray(dbRows)) {
+        const withUrls = dbRows.map((row) => {
+          const localName = parseLocalFileNameFromKey(row.key);
+          return {
+            ...row,
+            url: localName ? makeLocalFileUrl(localName) : null,
+            storage: localName ? "local" : "unknown",
+          };
+        });
+        if (withUrls.length) return res.json(withUrls);
+      }
+      return res.json(await listLocalFiles());
+    }
+
     if (dbRows) {
       const files = await Promise.all(
         dbRows.map(async (row) => {
-          const signedUrl = await getSignedUrl(
-            s3,
-            new GetObjectCommand({ Bucket: BUCKET, Key: row.key }),
-            { expiresIn: 3600 }
-          );
+          let signedUrl = null;
+          try {
+            signedUrl = await getSignedUrl(
+              s3,
+              new GetObjectCommand({ Bucket: BUCKET, Key: row.key }),
+              { expiresIn: 3600 }
+            );
+          } catch (signErr) {
+            console.error("/files sign url error:", row.key, signErr.message);
+          }
           return { ...row, url: signedUrl };
         })
       );
@@ -1160,6 +1321,11 @@ app.get("/files", async (req, res) => {
     res.json(files);
   } catch (err) {
     console.error("/files error:", err);
+    if (isAwsAuthOrConfigError(err)) {
+      // Keep UI functional even when object storage credentials are unavailable.
+      return res.json(await listLocalFiles());
+    }
+
     res.status(500).json({ error: "Failed to list files: " + err.message });
   }
 });
@@ -1168,6 +1334,14 @@ app.get("/files", async (req, res) => {
 app.delete("/files/:key(*)", async (req, res) => {
   const key = req.params.key;
   try {
+    const localName = parseLocalFileNameFromKey(key);
+    if (localName) {
+      const fullPath = path.join(LOCAL_UPLOADS_DIR, localName);
+      await fs.promises.unlink(fullPath).catch(() => {});
+      await deleteFile(key);
+      return res.json({ message: "File deleted" });
+    }
+
     await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
     await deleteFile(key);
     res.json({ message: "File deleted" });
@@ -1177,11 +1351,61 @@ app.delete("/files/:key(*)", async (req, res) => {
   }
 });
 
+async function translateChunkWithPublicApi(chunk) {
+  const endpoint = new URL("https://translate.googleapis.com/translate_a/single");
+  endpoint.searchParams.set("client", "gtx");
+  endpoint.searchParams.set("sl", "auto");
+  endpoint.searchParams.set("tl", "ar");
+  endpoint.searchParams.set("dt", "t");
+  endpoint.searchParams.set("q", chunk);
+
+  const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Public translate API failed: ${response.status} ${text.slice(0, 120)}`);
+  }
+
+  const data = await response.json();
+  const translated = (data?.[0] || []).map((part) => part?.[0] || "").join("").trim();
+  if (!translated) {
+    throw new Error("Public translate API returned empty translation");
+  }
+  return translated;
+}
+
+async function translateChunkWithClaude(chunk) {
+  const prompt = `Translate the following text to Arabic.
+Rules:
+- Return ONLY the translated Arabic text.
+- Keep meaning accurate.
+- Do not add explanations.
+
+Text:
+${chunk}`;
+
+  const result = await invokeClaudeWithFallback(prompt, 1600, "Translation fallback");
+  const translated = String(result?.text || "").trim();
+  if (!translated) {
+    throw new Error("Claude translation fallback returned empty text");
+  }
+  return translated;
+}
+
 // --- Translate text to Arabic ---
 // POST /translate  { text: "...", sourceLang: "en" (optional) }
 app.post("/translate", async (req, res) => {
   const { text, sourceLang = "auto" } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ error: "No text provided" });
+
+  // Short-circuit when content already appears Arabic.
+  if (sourceLang === "ar" || (sourceLang === "auto" && /[\u0600-\u06FF]/.test(text))) {
+    return res.json({
+      translatedText: text,
+      detectedLanguage: "ar",
+      mode: "passthrough",
+      providerLabel: "Local Arabic passthrough",
+    });
+  }
 
   const MAX_BYTES = 9000;
   const encoder = new TextEncoder();
@@ -1210,8 +1434,127 @@ app.post("/translate", async (req, res) => {
     );
     res.json({ translatedText: translated.join(" "), detectedLanguage: sourceLang });
   } catch (err) {
-    console.error(err);
+    console.error("/translate error:", err);
+
+    if (isAwsAuthOrConfigError(err) || String(err?.message || "").toLowerCase().includes("translate")) {
+      try {
+        const publicTranslated = await Promise.all(chunks.map((chunk) => translateChunkWithPublicApi(chunk)));
+        return res.json({
+          translatedText: publicTranslated.join(" "),
+          detectedLanguage: sourceLang,
+          mode: "fallback-public",
+          providerLabel: "Public Translate Fallback",
+          warning: "AWS Translate unavailable. Used public translation fallback.",
+        });
+      } catch (publicErr) {
+        console.error("/translate public fallback error:", publicErr.message);
+      }
+
+      try {
+        const modelTranslated = await Promise.all(chunks.map((chunk) => translateChunkWithClaude(chunk)));
+        return res.json({
+          translatedText: modelTranslated.join(" "),
+          detectedLanguage: sourceLang,
+          mode: "fallback-model",
+          providerLabel: "Claude Translation Fallback",
+          warning: "AWS Translate unavailable. Used model translation fallback.",
+        });
+      } catch (modelErr) {
+        console.error("/translate model fallback error:", modelErr.message);
+      }
+
+      return res.json({
+        translatedText: text,
+        detectedLanguage: sourceLang,
+        mode: "fallback-passthrough",
+        providerLabel: "Local Translation Passthrough",
+        warning: "All translation providers are unavailable. Returned source text.",
+      });
+    }
+
     res.status(500).json({ error: "Translation failed: " + err.message });
+  }
+});
+
+app.post("/generate-contextual-content", async (req, res) => {
+  const {
+    kind,
+    lessonContext = {},
+    instruction = "",
+    mode = "generate",
+    source = "ai",
+    provider = "youtube",
+    chartType = "infographic",
+  } = req.body || {};
+
+  if (!kind) {
+    return res.status(400).json({ error: "kind is required" });
+  }
+
+  const contextDocument = buildLessonContextDocument({ ...lessonContext, instruction });
+
+  const parseJsonObject = (text) => {
+    const match = String(text || "").match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("Model did not return valid JSON");
+    return JSON.parse(match[0]);
+  };
+
+  try {
+    if (kind === "text") {
+      const prompt = `أنت محرر تعليمي عربي محترف. أنشئ ناتجاً واحداً فقط مرتبطاً مباشرة بسياق الدرس الحالي دون الخروج عنه.
+
+سياق الدرس:
+${contextDocument}
+
+تعليمات المستخدم: ${instruction || "أنشئ نصاً تعليمياً جديداً"}
+نمط العمل: ${mode}
+
+أعد JSON فقط:
+{
+  "title": "عنوان قصير",
+  "content": "النص النهائي بالعربية",
+  "rationale": "سبب مناسبة الناتج للسياق"
+}`;
+
+      try {
+        const invokeResult = await invokeClaudeWithFallback(prompt, 1800, "Contextual text generation");
+        return res.json({ preview: parseJsonObject(invokeResult.text) });
+      } catch (err) {
+        console.error("[generate-contextual-content:text] Fallback:", err.message);
+        return res.json({ preview: createFallbackTextResult({ lessonContext, instruction, mode }) });
+      }
+    }
+
+    if (kind === "image") {
+      return res.json({
+        items: await getContextualImageCandidates({ lessonContext, instruction, source, category: req.body.category }),
+      });
+    }
+
+    if (kind === "video") {
+      return res.json({
+        items: await getContextualVideoCandidates({ lessonContext, instruction, provider }),
+      });
+    }
+
+    if (kind === "chart") {
+      return res.json({
+        preview: createContextualChartPreview({ lessonContext, instruction, chartType }),
+      });
+    }
+
+    return res.status(400).json({ error: `Unsupported kind: ${kind}` });
+  } catch (err) {
+    console.error("[generate-contextual-content] Error:", err.message);
+    const normalized = normalizeBedrockError(err, "Contextual generation");
+    if (normalized.retryAfterSeconds) {
+      res.set("Retry-After", String(normalized.retryAfterSeconds));
+    }
+    return res.status(normalized.status || 500).json({
+      error: normalized.message || err.message,
+      code: normalized.code,
+      retryAfterSeconds: normalized.retryAfterSeconds,
+    });
   }
 });
 

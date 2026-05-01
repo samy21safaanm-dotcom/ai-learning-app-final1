@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import ContextualEditorToolbar from "./ContextualEditorToolbar";
 
 // ── Colors ─────────────────────────────────────────────────────────────────
 const C = {
@@ -460,7 +461,80 @@ function VisualCard({ card }) {
 }
 
 // ── Lesson Intro ───────────────────────────────────────────────────────────
-function LessonIntro({ lesson, summary, questionsCount, onStart, images, imageCards, video, simulation }) {
+function ContentBlock({ block }) {
+  const typeLabels = { text: "نص", heading: "عنوان", image: "صورة", video: "فيديو", chart: "مخطط", quiz: "اختبار", divider: "فاصل" };
+  const embedUrl = (url) => {
+    if (!url) return url;
+    if (url.includes("youtube.com/watch")) return url.replace("watch?v=", "embed/");
+    if (url.includes("youtu.be/")) return url.replace("youtu.be/", "youtube.com/embed/");
+    if (url.includes("youtube.com/embed")) return url;
+    return url;
+  };
+  const isDirectVideo = (url) => /\.(mp4|webm|ogg)(\?|$)/i.test(url || "") || String(url || "").startsWith("blob:") || String(url || "").startsWith("data:video");
+  if (block.type === "divider") return <div style={{ height: "2px", background: "linear-gradient(90deg, transparent, #c4b5fd, transparent)", margin: "4px 0" }} />;
+  return (
+    <div style={{ borderRadius: "14px", border: "1px solid #e8eaf6", background: "#fff", overflow: "hidden", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px 16px", borderBottom: "1px solid #f3f4f6", background: "#fafafa" }}>
+        <span style={{ fontSize: "11px", fontWeight: 700, color: "#7c3aed", background: "#ede9fe", padding: "2px 10px", borderRadius: "20px" }}>{typeLabels[block.type] || block.type}</span>
+        {block.type === "image" && <span style={{ fontSize: "11px", color: "#9ca3af" }}>صورة مخصصة</span>}
+        {block.type === "video" && <span style={{ fontSize: "11px", color: "#9ca3af" }}>فيديو مدرج</span>}
+        {block.type === "chart" && <span style={{ fontSize: "11px", color: "#9ca3af" }}>رسم تعليمي</span>}
+      </div>
+      <div style={{ padding: block.type === "video" ? "0" : "16px" }}>
+        {block.type === "text" && (
+          <p style={{ margin: "0", fontSize: "15px", lineHeight: 1.8, color: "#374151",
+            fontWeight: block.format?.bold ? 700 : 400,
+            fontStyle: block.format?.italic ? "italic" : "normal",
+            textDecoration: block.format?.underline ? "underline" : "none",
+            textAlign: block.format?.align || "right" }}>{block.content}</p>
+        )}
+        {block.type === "heading" && (
+          <h3 style={{ margin: "0", fontSize: block.level === "h1" ? "22px" : block.level === "h2" ? "18px" : "15px", fontWeight: 700, color: "#1a237e" }}>{block.content}</h3>
+        )}
+        {block.type === "image" && (
+          <div>
+            {block.svg ? (
+              <div dangerouslySetInnerHTML={{ __html: block.svg }} />
+            ) : (
+              <img src={block.url} alt={block.caption || "صورة"} style={{ width: "100%", maxHeight: "360px", objectFit: "cover", display: "block" }}
+                onError={(e) => { e.target.src = "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?w=600&h=350&fit=crop"; }} />
+            )}
+            {block.caption && (
+              <div style={{ padding: "10px 16px", fontSize: "13px", color: "#6b7280", fontStyle: "italic", borderTop: "1px solid #f3f4f6" }}>📷 {block.caption}</div>
+            )}
+          </div>
+        )}
+        {block.type === "video" && (
+          isDirectVideo(block.url) || block.videoType === "file" ? (
+            <video src={block.url} controls style={{ display: "block", width: "100%", maxHeight: "420px", background: "#000" }} />
+          ) : (
+            <div style={{ position: "relative", width: "100%", paddingBottom: "56.25%", height: "0", overflow: "hidden", background: "#000" }}>
+              <iframe src={block.embedUrl || embedUrl(block.url)} style={{ position: "absolute", top: "0", left: "0", width: "100%", height: "100%", border: "none" }}
+                allowFullScreen title={block.caption || "فيديو"} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" />
+            </div>
+          )
+        )}
+        {block.type === "chart" && block.svg && (
+          <div>
+            <div dangerouslySetInnerHTML={{ __html: block.svg }} />
+            {block.caption && <div style={{ paddingTop: "10px", fontSize: "13px", color: "#6b7280" }}>{block.caption}</div>}
+          </div>
+        )}
+        {block.type === "quiz" && (
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "4px 0" }}>
+            <div style={{ width: "40px", height: "40px", background: "#ede9fe", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px" }}>❔</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: "14px", color: "#1a237e" }}>اختبار تفاعلي</div>
+              <div style={{ fontSize: "12px", color: "#7c3aed" }}>✓ {block.questions?.length || 0} أسئلة تم إضافتها</div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LessonIntro({ lesson, summary, questionsCount, onStart, images, imageCards, video, simulation, contentBlocks }) {
   if (simulation) console.log("✅ Simulation received:", simulation.steps?.length, "steps");
   return (
     <div style={s.introWrap}>
@@ -568,6 +642,20 @@ function LessonIntro({ lesson, summary, questionsCount, onStart, images, imageCa
 
         {/* ── محاكاة تفاعلية ── */}
         {simulation && <SimulationBlock simulation={simulation} />}
+
+        {/* ── المحتوى المضاف من الشريط ── يُدرج مباشرة داخل الدرس */}
+        {contentBlocks?.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <div style={{ flex: 1, height: "1px", background: "linear-gradient(90deg, #c4b5fd, transparent)" }} />
+              <span style={{ fontSize: "12px", fontWeight: 700, color: "#7c3aed", whiteSpace: "nowrap" }}>✨ محتوى إضافي مخصص</span>
+              <div style={{ flex: 1, height: "1px", background: "linear-gradient(90deg, transparent, #c4b5fd)" }} />
+            </div>
+            {contentBlocks.map((block) => (
+              <ContentBlock key={block.id} block={block} />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── الـ Sidebar ── */}
@@ -700,6 +788,8 @@ export default function LessonPage({ lessonData, onClose }) {
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState([]);
   const [streak, setStreak] = useState(0);
+  const [contentBlocks, setContentBlocks] = useState([]);
+  const [showToolbar, setShowToolbar] = useState(true);
   const { speaking, loading, toggle, selectedVoice, setSelectedVoice } = useAudioReader(lesson, summary);
 
   const handleAnswer = (correct) => {
@@ -712,6 +802,14 @@ export default function LessonPage({ lessonData, onClose }) {
 
   const handleRetry = () => {
     setCurrent(0); setAnswers([]); setStreak(0); setPhase("intro");
+  };
+
+  const handleContentAdd = (block) => {
+    setContentBlocks([...contentBlocks, { ...block, id: Date.now() }]);
+  };
+
+  const handleContentReorder = (reorderedBlocks) => {
+    setContentBlocks(reorderedBlocks);
   };
 
   return (
@@ -814,7 +912,7 @@ export default function LessonPage({ lessonData, onClose }) {
       {/* Content */}
       <div style={s.content}>
         {phase === "intro" && (
-          <LessonIntro key={JSON.stringify({hasImages: !!images, hasCards: !!imageCards, hasSim: !!simulation})} lesson={lesson} summary={summary} questionsCount={questions.length} onStart={() => setPhase("quiz")} images={images} imageCards={imageCards} video={video} simulation={simulation} />
+          <LessonIntro key={JSON.stringify({hasImages: !!images, hasCards: !!imageCards, hasSim: !!simulation})} lesson={lesson} summary={summary} questionsCount={questions.length} onStart={() => { setPhase("quiz"); }} images={images} imageCards={imageCards} video={video} simulation={simulation} contentBlocks={contentBlocks} />
         )}
         {phase === "map" && (
           <div style={{ maxWidth: "900px", margin: "0 auto", animation: "fadeSlide 0.4s ease" }}>
@@ -854,6 +952,22 @@ export default function LessonPage({ lessonData, onClose }) {
           <Results questions={questions} answers={answers} onRetry={handleRetry} onClose={onClose} />
         )}
       </div>
+
+      {/* Editor Toolbar - Show only in lesson phase */}
+      {showToolbar && phase === "intro" && (
+        <ContextualEditorToolbar
+          lessonContext={{
+            title: lesson.title,
+            summary,
+            sections: lesson.sections,
+            objectives: lesson.objectives,
+            keyTerms: lesson.keyTerms,
+          }}
+          onContentAdd={handleContentAdd}
+          onContentReorder={handleContentReorder}
+          blocks={contentBlocks}
+        />
+      )}
     </div>
   );
 }
