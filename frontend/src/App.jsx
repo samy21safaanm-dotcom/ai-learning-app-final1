@@ -2,7 +2,46 @@ import React, { useState, useEffect, useRef } from "react";
 import LessonPage from "./LessonPage";
 import LoginPage from "./LoginPage";
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Error Boundary ──────────────────────────────────────────────────────────
+export class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error("ErrorBoundary caught:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#f9fafb", direction: "rtl", textAlign: "right", padding: "20px" }}>
+          <div style={{ maxWidth: "500px", background: "#fff", borderRadius: "16px", padding: "32px", boxShadow: "0 4px 16px rgba(0,0,0,0.1)", border: "1px solid #fee2e2" }}>
+            <div style={{ fontSize: "48px", marginBottom: "16px" }}>⚠️</div>
+            <h2 style={{ margin: "0 0 12px", fontSize: "18px", fontWeight: 700, color: "#dc2626" }}>حدث خطأ</h2>
+            <p style={{ margin: "0 0 16px", fontSize: "14px", color: "#666", lineHeight: 1.6 }}>
+              حدثت مشكلة غير متوقعة في التطبيق. تفاصيل الخطأ:
+            </p>
+            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "12px", marginBottom: "16px", fontSize: "12px", color: "#991b1b", fontFamily: "monospace", overflow: "auto", maxHeight: "200px" }}>
+              {String(this.state.error?.message || "خطأ غير معروف")}
+            </div>
+            <button
+              style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: "8px", padding: "10px 20px", cursor: "pointer", fontSize: "14px", fontWeight: 600 }}
+              onClick={() => window.location.reload()}
+            >
+              إعادة تحميل الصفحة
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ── Login & Main App ────────────────────────────────────────────────────────
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -44,6 +83,9 @@ function buildGenerationErrorMessage(data, status, fallback) {
 }
 
 function buildFallbackNotice(data) {
+  if (data?.fallbackReason === "credentials") {
+    return "تم إنشاء الدرس في وضع سريع (بدون AI) لأن بيانات اعتماد AWS منتهية الصلاحية أو غير صحيحة. حدّث ملف .env بمفاتيح AWS وأعد تشغيل الخادم للحصول على درس مولَّد بالكامل بالذكاء الاصطناعي.";
+  }
   const waitSeconds = Number(data?.retryAfterSeconds);
   const waitText = formatWaitTime(waitSeconds);
 
@@ -68,127 +110,848 @@ function Spinner({ small }) {
 
 // ── SCORM Export ───────────────────────────────────────────────────────────
 function generateSCORM(lessonData) {
-  const { lesson, summary, quiz } = lessonData;
+  const { lesson = {}, summary = "", quiz = [], imageCards = [], video = null, simulation = null, conceptMap = null } = lessonData || {};
 
-  const questionsHTML = quiz.map((q, i) => `
-    <div class="question" id="q${i}">
-      <p class="q-text"><strong>س${i + 1}:</strong> ${q.question}</p>
-      <div class="options">
-        ${q.options.map((opt, j) => `
-          <label class="option">
-            <input type="radio" name="q${i}" value="${j}" onchange="checkAnswer(${i}, ${j}, '${q.answer.replace(/'/g, "\\'")}')">
-            <span>${opt}</span>
-          </label>
-        `).join("")}
-      </div>
-      <div class="feedback" id="fb${i}" style="display:none"></div>
-    </div>
-  `).join("");
+  const escapeXml = (value) => String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 
-  const sectionsHTML = lesson.sections?.map(sec => `
-    <div class="section">
-      <h3>${sec.heading}</h3>
-      <p>${sec.content}</p>
-    </div>
-  `).join("") || "";
+  const payload = JSON.stringify({ lesson, summary, quiz, imageCards, video, simulation, conceptMap })
+    .replace(/</g, "\\u003c")
+    .replace(/<\/script/gi, "<\\/script");
 
-  const objectivesHTML = lesson.objectives?.map(o => `<li>${o}</li>`).join("") || "";
-  const keyTermsHTML = lesson.keyTerms?.map(t => `
-    <div class="term-row"><strong>${t.term}:</strong> ${t.definition}</div>
-  `).join("") || "";
-
-  const indexHTML = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
+  const indexHTML = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="UTF-8"/>
-<title>${lesson.title}</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; background: #f0f4ff; color: #1a1a2e; }
-  .header { background: linear-gradient(135deg, #1a237e, #7c3aed); color: white; padding: 24px 32px; text-align: center; }
-  .header h1 { font-size: 22px; margin-bottom: 6px; }
-  .header p { font-size: 13px; opacity: 0.8; }
-  .container { max-width: 860px; margin: 24px auto; padding: 0 16px; }
-  .card { background: white; border-radius: 14px; padding: 24px; margin-bottom: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.07); }
-  .card h2 { color: #1a237e; font-size: 16px; margin-bottom: 14px; border-bottom: 2px solid #e8eaf6; padding-bottom: 8px; }
-  .objectives ul { padding-right: 20px; }
-  .objectives li { line-height: 2; font-size: 14px; color: #444; }
-  .section { border-right: 3px solid #7c3aed; padding-right: 14px; margin-bottom: 16px; }
-  .section h3 { color: #1a237e; font-size: 15px; margin-bottom: 6px; }
-  .section p { font-size: 14px; line-height: 1.8; color: #444; }
-  .term-row { padding: 8px 12px; background: #f8f9ff; border-radius: 8px; margin-bottom: 8px; font-size: 14px; }
-  .summary-text { font-size: 14px; line-height: 1.9; color: #333; }
-  .question { background: #f8f9ff; border-radius: 12px; padding: 18px; margin-bottom: 16px; border: 1px solid #e8eaf6; }
-  .q-text { font-size: 15px; font-weight: 600; color: #1a237e; margin-bottom: 14px; }
-  .options { display: flex; flex-direction: column; gap: 10px; }
-  .option { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: white; border: 2px solid #e8eaf6; border-radius: 10px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
-  .option:hover { border-color: #7c3aed; background: #f5f3ff; }
-  .feedback { margin-top: 12px; padding: 12px; border-radius: 8px; font-size: 13px; font-weight: 600; }
-  .correct { background: #d1fae5; color: #059669; border: 1px solid #6ee7b7; }
-  .wrong { background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; }
-  #score-section { text-align: center; padding: 30px; }
-  #score-section h2 { font-size: 28px; color: #7c3aed; }
-  #score-section p { font-size: 16px; color: #555; margin-top: 8px; }
-  .submit-btn { display: block; width: 100%; padding: 14px; background: linear-gradient(135deg, #1a237e, #7c3aed); color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 10px; }
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeXml(lesson.title || "درس تفاعلي")}</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-<div class="header">
-  <h1>🎓 ${lesson.title}</h1>
-  <p>درس تفاعلي - جامعة القصيم | الكلية التطبيقية</p>
-</div>
-<div class="container">
-  ${objectivesHTML ? `<div class="card objectives"><h2>🎯 أهداف الدرس</h2><ul>${objectivesHTML}</ul></div>` : ""}
-  ${sectionsHTML ? `<div class="card"><h2>📖 محتوى الدرس</h2>${sectionsHTML}</div>` : ""}
-  ${keyTermsHTML ? `<div class="card"><h2>📚 المصطلحات الرئيسية</h2>${keyTermsHTML}</div>` : ""}
-  <div class="card"><h2>📋 الملخص</h2><p class="summary-text">${summary}</p></div>
-  <div class="card">
-    <h2>✏️ اختبر نفسك</h2>
-    <div id="quiz">${questionsHTML}</div>
-    <button class="submit-btn" onclick="submitQuiz()">إرسال الإجابات 🚀</button>
-    <div id="score-section" style="display:none"></div>
-  </div>
-</div>
-<script>
-var answers = {};
-var total = ${quiz.length};
-function checkAnswer(qIndex, optIndex, correct) {
-  answers[qIndex] = { selected: optIndex, correct: correct };
-}
-function submitQuiz() {
-  var score = 0;
-  for (var i = 0; i < total; i++) {
-    var fb = document.getElementById('fb' + i);
-    fb.style.display = 'block';
-    if (answers[i]) {
-      var opts = document.querySelectorAll('#q' + i + ' .option');
-      var selectedOpt = opts[answers[i].selected];
-      var selectedText = selectedOpt ? selectedOpt.querySelector('span').textContent : '';
-      if (selectedText === answers[i].correct) {
-        score++;
-        fb.className = 'feedback correct';
-        fb.textContent = '✓ إجابة صحيحة!';
-      } else {
-        fb.className = 'feedback wrong';
-        fb.textContent = '✗ الإجابة الصحيحة: ' + answers[i].correct;
-      }
-    } else {
-      fb.className = 'feedback wrong';
-      fb.textContent = '✗ لم تجب على هذا السؤال';
-    }
-  }
-  var pct = Math.round((score / total) * 100);
-  document.getElementById('score-section').style.display = 'block';
-  document.getElementById('score-section').innerHTML = '<h2>' + pct + '%</h2><p>' + score + ' من ' + total + ' إجابة صحيحة</p>';
-  document.querySelector('.submit-btn').style.display = 'none';
-  if (typeof API !== 'undefined' && API) {
-    try { API.LMSSetValue('cmi.core.score.raw', pct); API.LMSSetValue('cmi.core.lesson_status', pct >= 60 ? 'passed' : 'failed'); API.LMSCommit(''); } catch(e) {}
-  }
-}
-</script>
+  <div id="scorm-root"></div>
+  <script id="lesson-data" type="application/json">${payload}</script>
+  <script src="script.js"></script>
 </body>
 </html>`;
+
+  const stylesCSS = `
+:root {
+  --navy: #1a237e;
+  --purple: #7c3aed;
+  --purple-light: #ede9fe;
+  --sky: #eef2ff;
+  --line: #e8eaf6;
+  --text: #334155;
+  --muted: #64748b;
+  --surface: #ffffff;
+  --surface-soft: #f8fafc;
+  --danger: #dc2626;
+  --danger-soft: #fee2e2;
+  --success: #059669;
+  --success-soft: #d1fae5;
+  --shadow: 0 12px 36px rgba(15, 23, 42, 0.08);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; min-height: 100%; }
+body {
+  font-family: Tahoma, Arial, sans-serif;
+  direction: rtl;
+  background: linear-gradient(180deg, #eef2ff 0%, #f8fafc 45%, #eef2ff 100%);
+  color: var(--text);
+}
+
+.page-shell { min-height: 100vh; }
+.page-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: linear-gradient(135deg, #0d1b6e, #1a237e, #7c3aed);
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(13, 27, 110, 0.18);
+}
+.page-header__inner {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.brand-wrap { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.brand-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.18);
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.brand-project { font-size: 11px; opacity: 0.82; font-weight: 700; }
+.brand-title {
+  font-size: clamp(16px, 2vw, 22px);
+  font-weight: 800;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.header-badge {
+  background: rgba(255,255,255,0.14);
+  border: 1px solid rgba(255,255,255,0.22);
+  color: #fff;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.hero-strip {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 18px 24px 0;
+}
+.hero-panel {
+  background: rgba(255,255,255,0.92);
+  border: 1px solid rgba(255,255,255,0.9);
+  backdrop-filter: blur(10px);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.hero-copy h2 { margin: 0 0 4px; color: var(--navy); font-size: 16px; }
+.hero-copy p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.hero-stats { display: flex; gap: 10px; flex-wrap: wrap; }
+.hero-stat {
+  min-width: 96px;
+  background: linear-gradient(135deg, #f8faff, #eef2ff);
+  border: 1px solid #dbe4ff;
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+.hero-stat__label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.hero-stat__value { font-size: 18px; font-weight: 800; color: var(--navy); }
+
+.top-nav {
+  max-width: 1360px;
+  margin: 12px auto 0;
+  padding: 0 24px;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+}
+.top-nav__link {
+  text-decoration: none;
+  color: var(--navy);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.lesson-shell {
+  max-width: 1360px;
+  margin: 18px auto 0;
+  padding: 0 24px 28px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 20px;
+  align-items: start;
+}
+.main-column, .side-column { min-width: 0; }
+.main-column { display: flex; flex-direction: column; gap: 18px; }
+.side-column { display: flex; flex-direction: column; gap: 18px; position: sticky; top: 148px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+  overflow: hidden;
+}
+.card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #f1f5f9;
+  background: linear-gradient(180deg, #ffffff, #fbfcff);
+}
+.card__header--space { justify-content: space-between; }
+.card__icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--purple-light);
+  display: grid;
+  place-items: center;
+  font-size: 17px;
+  color: var(--purple);
+  flex-shrink: 0;
+}
+.card__title { font-size: 15px; font-weight: 800; color: var(--navy); }
+.card__body { padding: 18px; }
+.section-list { display: flex; flex-direction: column; gap: 14px; }
+
+.lesson-title {
+  margin: 0 0 14px;
+  font-size: clamp(22px, 2vw, 30px);
+  line-height: 1.5;
+  color: var(--navy);
+}
+.objective-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.objective-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: linear-gradient(135deg, #faf5ff, #f8fafc);
+  border: 1px solid #e9d5ff;
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.objective-mark {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--navy), var(--purple));
+  color: #fff;
+  font-size: 12px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.content-block { border: 1px solid #edf2f7; border-radius: 16px; overflow: hidden; background: #fff; }
+.content-block__head {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  background: #fcfdff;
+  border-bottom: 1px solid #eef2f7;
+}
+.content-block__line { width: 5px; height: 28px; border-radius: 99px; background: linear-gradient(180deg, var(--navy), var(--purple)); }
+.content-block__title { margin: 0; font-size: 16px; color: var(--navy); font-weight: 800; }
+.content-block__text { margin: 0; padding: 16px; line-height: 1.9; font-size: 15px; color: var(--text); background: #f8fafc; }
+
+.interactive-grid { display: grid; gap: 14px; }
+.interactive-card {
+  border: 1px solid #e9d5ff;
+  border-radius: 16px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #ffffff, #faf5ff);
+}
+.interactive-card__toggle {
+  width: 100%;
+  background: transparent;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  cursor: pointer;
+  font: inherit;
+}
+.interactive-card__title { font-size: 15px; font-weight: 800; color: var(--navy); text-align: right; }
+.interactive-card__body { padding: 0 18px 18px; color: var(--text); line-height: 1.9; }
+.interactive-card__body[hidden] { display: none; }
+.interactive-card__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid #e9d5ff;
+  border-radius: 999px;
+  color: var(--purple);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 10px;
+}
+
+.video-panel {
+  display: grid;
+  gap: 14px;
+}
+.video-frame {
+  position: relative;
+  width: 100%;
+  padding-bottom: 56.25%;
+  background: #000;
+  border-radius: 16px;
+  overflow: hidden;
+}
+.video-frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.video-link {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-decoration: none;
+  color: inherit;
+  background: #fff5f5;
+  border: 1px solid #fca5a5;
+  border-radius: 14px;
+  padding: 14px;
+}
+.video-link__icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--danger);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.simulation {
+  border: 2px solid #86efac;
+  background: linear-gradient(135deg, #f0fdf4, #dcfce7);
+  border-radius: 20px;
+  overflow: hidden;
+}
+.simulation__header {
+  background: linear-gradient(135deg, #059669, #34d399);
+  color: #fff;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.simulation__header h3 { margin: 0 0 4px; font-size: 16px; }
+.simulation__header p { margin: 0; font-size: 12px; opacity: 0.86; }
+.simulation__body { padding: 18px; display: grid; gap: 14px; }
+.simulation__scenario {
+  background: #fff;
+  border: 1px solid #bbf7d0;
+  border-radius: 14px;
+  padding: 14px;
+  line-height: 1.8;
+}
+.simulation__step {
+  background: #fff;
+  border: 1px solid #bbf7d0;
+  border-radius: 16px;
+  padding: 16px;
+}
+.simulation__step h4 { margin: 0 0 10px; color: #065f46; font-size: 16px; }
+.simulation__question { margin: 0 0 12px; font-weight: 700; color: #065f46; }
+.sim-options { display: grid; gap: 10px; }
+.sim-option {
+  width: 100%;
+  text-align: right;
+  border: 1px solid #d1fae5;
+  background: #f9fafb;
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+.sim-option.is-correct { background: #d1fae5; border-color: #6ee7b7; color: #065f46; }
+.sim-option.is-wrong { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.sim-answer {
+  width: 100%;
+  min-height: 110px;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  padding: 12px;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.8;
+}
+.sim-feedback {
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.sim-feedback.is-correct { background: #d1fae5; border: 1px solid #6ee7b7; color: #065f46; }
+.sim-feedback.is-wrong { background: #fee2e2; border: 1px solid #fca5a5; color: #991b1b; }
+.sim-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.button {
+  border: none;
+  border-radius: 12px;
+  padding: 11px 18px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.button--primary { background: linear-gradient(135deg, var(--navy), var(--purple)); color: #fff; }
+.button--ghost { background: #fff; border: 1px solid var(--line); color: var(--muted); }
+.button--success { background: linear-gradient(135deg, #059669, #10b981); color: #fff; }
+
+.summary-text { line-height: 1.9; font-size: 14px; color: var(--text); background: #f8fafc; border-radius: 14px; padding: 14px; }
+.glossary-list { display: flex; flex-direction: column; gap: 10px; }
+.glossary-item {
+  background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+  border: 1px solid #ddd6fe;
+  border-radius: 14px;
+  padding: 14px;
+  display: grid;
+  gap: 6px;
+}
+.glossary-item__term { font-weight: 800; color: var(--purple); font-size: 14px; }
+.glossary-item__def { color: #475569; line-height: 1.8; font-size: 13px; }
+
+.quiz-card .question { background: #f8f9ff; border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+.quiz-card .question:last-child { margin-bottom: 0; }
+.quiz-card .q-title { margin: 0 0 12px; font-size: 15px; font-weight: 800; color: var(--navy); }
+.quiz-card .q-options { display: grid; gap: 10px; }
+.quiz-card .q-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 11px 13px;
+  cursor: pointer;
+}
+.quiz-card .q-option.is-selected { border-color: var(--purple); background: #faf5ff; }
+.quiz-card .q-feedback {
+  margin-top: 12px;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.quiz-card .q-feedback.is-correct { background: var(--success-soft); border: 1px solid #6ee7b7; color: var(--success); }
+.quiz-card .q-feedback.is-wrong { background: var(--danger-soft); border: 1px solid #fca5a5; color: var(--danger); }
+.quiz-score {
+  margin-top: 16px;
+  background: linear-gradient(135deg, #f8fafc, #eef2ff);
+  border: 1px solid #dbeafe;
+  border-radius: 16px;
+  padding: 16px;
+  text-align: center;
+}
+.quiz-score__value { font-size: 30px; font-weight: 900; color: var(--navy); }
+
+.map-placeholder {
+  min-height: 200px;
+  border-radius: 16px;
+  border: 1px dashed #c4b5fd;
+  background: linear-gradient(135deg, #faf5ff, #eef2ff);
+  padding: 18px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 1100px) {
+  .lesson-shell { grid-template-columns: 1fr; }
+  .side-column { position: static; }
+}
+
+@media (max-width: 720px) {
+  .page-header__inner,
+  .hero-strip,
+  .top-nav,
+  .lesson-shell { padding-right: 16px; padding-left: 16px; }
+  .page-header__inner { flex-wrap: wrap; }
+  .hero-panel { padding: 14px; }
+  .hero-stats { width: 100%; }
+  .hero-stat { flex: 1 1 100px; }
+}
+`;
+
+  const scriptJS = `
+(function () {
+  var dataNode = document.getElementById("lesson-data");
+  var root = document.getElementById("scorm-root");
+  if (!dataNode || !root) return;
+
+  var state = {
+    lessonData: JSON.parse(dataNode.textContent || "{}"),
+    quizAnswers: {},
+    simulationStep: 0,
+    simulationFeedback: null,
+    simulationScore: 0,
+    simulationDone: false,
+  };
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function nl2br(value) {
+    return escapeHtml(value).replace(/\\n/g, "<br />");
+  }
+
+  function embedUrl(url) {
+    if (!url) return "";
+    if (url.indexOf("youtube.com/watch") >= 0) return url.replace("watch?v=", "embed/");
+    if (url.indexOf("youtu.be/") >= 0) return url.replace("youtu.be/", "youtube.com/embed/");
+    return url;
+  }
+
+  function getSimulationStep() {
+    var simulation = state.lessonData.simulation;
+    if (!simulation || !Array.isArray(simulation.steps)) return null;
+    return simulation.steps[state.simulationStep] || null;
+  }
+
+  function renderObjectives(list) {
+    if (!Array.isArray(list) || !list.length) return "";
+    return '<div class="card" id="objectives"><div class="card__header card__header--space"><div style="display:flex;align-items:center;gap:10px"><div class="card__icon">🎯</div><div class="card__title">أهداف الدرس</div></div><span class="interactive-card__meta">عرض جماعي</span></div><div class="card__body"><ul class="objective-list">' +
+      list.map(function (item) {
+        return '<li class="objective-item"><span class="objective-mark">✓</span><span>' + escapeHtml(item) + '</span></li>';
+      }).join("") +
+      '</ul></div></div>';
+  }
+
+  function renderSections(list) {
+    if (!Array.isArray(list) || !list.length) return "";
+    return '<div class="card" id="content"><div class="card__header"><div class="card__icon">📘</div><div class="card__title">محتوى الدرس</div></div><div class="card__body"><div class="section-list">' +
+      list.map(function (section) {
+        return '<article class="content-block"><div class="content-block__head"><div style="display:flex;align-items:center;gap:10px"><div class="content-block__line"></div><h3 class="content-block__title">' + escapeHtml(section.heading || "عنوان") + '</h3></div></div><p class="content-block__text">' + nl2br(section.content || "") + '</p></article>';
+      }).join("") +
+      '</div></div></div>';
+  }
+
+  function renderInteractiveCards(list) {
+    if (!Array.isArray(list) || !list.length) return "";
+    return '<div class="card" id="cards"><div class="card__header"><div class="card__icon">🖼️</div><div class="card__title">بطاقات توضيحية تفاعلية</div></div><div class="card__body"><div class="interactive-grid">' +
+      list.map(function (card, index) {
+        var cardId = 'interactive-card-' + index;
+        return '<section class="interactive-card"><button class="interactive-card__toggle" type="button" data-toggle-card="' + cardId + '"><div style="display:flex;align-items:center;gap:10px"><span class="interactive-card__meta">AI</span><span class="interactive-card__title">' + escapeHtml(card.title || ('بطاقة ' + (index + 1))) + '</span></div><span>⌄</span></button><div class="interactive-card__body" id="' + cardId + '"' + (index > 0 ? ' hidden' : '') + '><p>' + nl2br(card.description || card.caption || '') + '</p></div></section>';
+      }).join("") +
+      '</div></div></div>';
+  }
+
+  function renderVideo(video) {
+    if (!video || !video.url) return "";
+    return '<div class="card" id="video"><div class="card__header"><div class="card__icon">🎬</div><div class="card__title">فيديو تعليمي</div></div><div class="card__body"><div class="video-panel"><div class="video-frame"><iframe src="' + escapeHtml(embedUrl(video.embedUrl || video.url)) + '" title="فيديو تعليمي" allowfullscreen loading="lazy"></iframe></div><a class="video-link" href="' + escapeHtml(video.url) + '" target="_blank" rel="noreferrer"><span class="video-link__icon">▶</span><div><div style="font-weight:800;color:#dc2626;margin-bottom:4px">مشاهدة على YouTube</div><div style="font-size:13px;color:#555">' + escapeHtml(video.searchQuery || video.title || 'فيديو مقترح مرتبط بالدرس') + '</div></div></a></div></div></div>';
+  }
+
+  function renderSimulation() {
+    var simulation = state.lessonData.simulation;
+    if (!simulation || !Array.isArray(simulation.steps) || !simulation.steps.length) return "";
+    var current = getSimulationStep();
+    var isChoice = current && current.type === "choice";
+    var isInput = current && current.type === "input";
+    var feedback = state.simulationFeedback;
+    var body = "";
+
+    if (state.simulationDone) {
+      var pct = Math.round((state.simulationScore / simulation.steps.length) * 100);
+      body = '<div class="simulation__step"><h4>اكتملت المحاكاة</h4><div class="quiz-score"><div class="quiz-score__value">' + pct + '%</div><p>أتممت ' + state.simulationScore + ' من ' + simulation.steps.length + ' خطوات بنجاح.</p></div>' +
+        (simulation.outcome ? '<div class="sim-feedback is-correct" style="margin-top:12px"><strong>ما تعلمته:</strong> ' + escapeHtml(simulation.outcome) + '</div>' : '') +
+        '<div class="sim-actions" style="margin-top:12px"><button class="button button--success" data-reset-sim>إعادة المحاكاة</button></div></div>';
+    } else {
+      body = '<div class="simulation__step"><h4>' + escapeHtml(current.title || ('الخطوة ' + (state.simulationStep + 1))) + '</h4><p style="margin:0 0 12px;line-height:1.8">' + nl2br(current.description || '') + '</p><p class="simulation__question">❓ ' + escapeHtml(current.question || '') + '</p>';
+      if (isChoice) {
+        body += '<div class="sim-options">' + (current.choices || []).map(function (choice) {
+          var className = 'sim-option';
+          if (feedback && feedback.selected === choice.id && choice.correct) className += ' is-correct';
+          else if (feedback && feedback.selected === choice.id && !choice.correct) className += ' is-wrong';
+          else if (feedback && choice.correct) className += ' is-correct';
+          return '<button type="button" class="' + className + '" data-sim-choice="' + escapeHtml(choice.id) + '">' + escapeHtml(choice.text) + '</button>';
+        }).join("") + '</div>';
+      }
+      if (isInput) {
+        body += '<textarea class="sim-answer" id="sim-answer" placeholder="اكتب إجابتك هنا..."></textarea><div class="sim-actions" style="margin-top:10px"><button class="button button--success" data-check-input>تحقق من الإجابة</button></div>';
+      }
+      if (feedback) {
+        body += '<div class="sim-feedback ' + (feedback.correct ? 'is-correct' : 'is-wrong') + '" style="margin-top:12px">' + escapeHtml(feedback.text || '') + '</div>';
+        body += '<div class="sim-actions" style="margin-top:12px"><button class="button button--primary" data-next-sim>' + (state.simulationStep < simulation.steps.length - 1 ? 'الخطوة التالية' : 'إنهاء المحاكاة') + '</button></div>';
+      }
+      body += '</div>';
+    }
+
+    return '<section class="simulation card" id="simulation"><div class="simulation__header"><div><h3>محاكاة تفاعلية</h3><p>' + escapeHtml(simulation.role || 'طالب') + ' · ' + simulation.steps.length + ' خطوات</p></div><div class="interactive-card__meta" style="background:rgba(255,255,255,0.18);color:#fff;border-color:rgba(255,255,255,0.24)">' + (state.simulationDone ? 'تمت' : ((state.simulationStep + 1) + '/' + simulation.steps.length)) + '</div></div><div class="simulation__body"><div class="simulation__scenario">📋 ' + nl2br(simulation.scenario || '') + '</div>' + body + '</div></section>';
+  }
+
+  function renderConceptMap(map) {
+    if (!map) return "";
+    var content = map.indexOf && map.indexOf("<svg") >= 0
+      ? map
+      : '<div class="map-placeholder">🗺️ تم تضمين خريطة مفاهيم لهذا الدرس. إذا لم تسمح منصة Blackboard بعرض الرسومات المضمنة مباشرة، يمكنك إبقاء هذا القسم كمرجع بصري نصي داخل محتوى SCORM.</div>';
+    return '<div class="card" id="map"><div class="card__header"><div class="card__icon">🗺️</div><div class="card__title">خريطة المفاهيم</div></div><div class="card__body">' + content + '</div></div>';
+  }
+
+  function renderSummary(summary) {
+    return '<div class="card"><div class="card__header"><div class="card__icon">📋</div><div class="card__title">ملخص الدرس</div></div><div class="card__body"><div class="summary-text">' + nl2br(summary || 'لا يوجد ملخص.') + '</div></div></div>';
+  }
+
+  function renderGlossary(terms) {
+    if (!Array.isArray(terms) || !terms.length) {
+      return '<div class="card"><div class="card__header"><div class="card__icon">📚</div><div class="card__title">المصطلحات</div></div><div class="card__body"><div class="summary-text">لا توجد مصطلحات متاحة لهذا الدرس.</div></div></div>';
+    }
+    return '<div class="card"><div class="card__header"><div class="card__icon">📚</div><div class="card__title">المصطلحات</div></div><div class="card__body"><div class="glossary-list">' +
+      terms.map(function (term) {
+        return '<div class="glossary-item"><div class="glossary-item__term">' + escapeHtml(term.term || '') + '</div><div class="glossary-item__def">' + escapeHtml(term.definition || '') + '</div></div>';
+      }).join("") +
+      '</div></div></div>';
+  }
+
+  function renderQuiz(quiz) {
+    if (!Array.isArray(quiz) || !quiz.length) return "";
+    return '<div class="card quiz-card" id="quiz"><div class="card__header"><div class="card__icon">✏️</div><div class="card__title">اختبر نفسك</div></div><div class="card__body">' +
+      quiz.map(function (q, index) {
+        var answer = state.quizAnswers[index];
+        var feedback = '';
+        if (answer && answer.submitted) {
+          feedback = '<div class="q-feedback ' + (answer.correct ? 'is-correct' : 'is-wrong') + '">' + (answer.correct ? '✓ إجابة صحيحة' : ('✗ الإجابة الصحيحة: ' + escapeHtml(q.answer))) + (q.explanation ? '<br />' + escapeHtml(q.explanation) : '') + '</div>';
+        }
+        return '<div class="question"><p class="q-title">س' + (index + 1) + ': ' + escapeHtml(q.question) + '</p><div class="q-options">' +
+          (q.options || []).map(function (opt, optIndex) {
+            var selected = answer && answer.selected === optIndex;
+            return '<label class="q-option' + (selected ? ' is-selected' : '') + '"><input class="visually-hidden" type="radio" name="q' + index + '" value="' + optIndex + '" ' + (selected ? 'checked' : '') + ' data-quiz-option="' + index + ':' + optIndex + '" /><span>' + escapeHtml(opt) + '</span></label>';
+          }).join("") +
+          '</div>' + feedback + '</div>';
+      }).join("") +
+      '<div class="sim-actions"><button class="button button--primary" data-submit-quiz>إرسال الإجابات</button></div><div id="quiz-score-slot"></div></div></div>';
+  }
+
+  function render() {
+    var lesson = state.lessonData.lesson || {};
+    var sections = Array.isArray(lesson.sections) ? lesson.sections : [];
+    var objectives = Array.isArray(lesson.objectives) ? lesson.objectives : [];
+    var terms = Array.isArray(lesson.keyTerms) ? lesson.keyTerms : [];
+    var cards = Array.isArray(state.lessonData.imageCards) ? state.lessonData.imageCards : [];
+    var navItems = [
+      ['title', 'العنوان'],
+      objectives.length ? ['objectives', 'الأهداف'] : null,
+      sections.length ? ['content', 'المحتوى'] : null,
+      cards.length ? ['cards', 'البطاقات'] : null,
+      state.lessonData.video ? ['video', 'الفيديو'] : null,
+      state.lessonData.simulation ? ['simulation', 'المحاكاة'] : null,
+      state.lessonData.conceptMap ? ['map', 'الخريطة'] : null,
+      ['quiz', 'الاختبار'],
+    ].filter(Boolean);
+
+    root.innerHTML =
+      '<div class="page-shell">' +
+        '<header class="page-header">' +
+          '<div class="page-header__inner">' +
+            '<div class="brand-wrap"><div class="brand-icon">🎓</div><div><div class="brand-project">EduAI Studio · SCORM 1.2</div><div class="brand-title">' + escapeHtml(lesson.title || 'درس تفاعلي') + '</div></div></div>' +
+            '<div class="header-badge">جامعة القصيم · الكلية التطبيقية</div>' +
+          '</div>' +
+        '</header>' +
+        '<div class="hero-strip"><div class="hero-panel"><div class="hero-copy"><h2>واجهة SCORM مطابقة لتبويب الدرس</h2><p>تم الحفاظ على التخطيط ثنائي الأعمدة حتى بعد الرفع على Blackboard، مع بطاقات رئيسية وشريط جانبي ثابت.</p></div><div class="hero-stats"><div class="hero-stat"><div class="hero-stat__label">الأقسام</div><div class="hero-stat__value">' + sections.length + '</div></div><div class="hero-stat"><div class="hero-stat__label">المصطلحات</div><div class="hero-stat__value">' + terms.length + '</div></div><div class="hero-stat"><div class="hero-stat__label">الأسئلة</div><div class="hero-stat__value">' + (Array.isArray(state.lessonData.quiz) ? state.lessonData.quiz.length : 0) + '</div></div></div></div></div>' +
+        '<nav class="top-nav">' + navItems.map(function (item) { return '<a class="top-nav__link" href="#' + item[0] + '">' + item[1] + '</a>'; }).join('') + '</nav>' +
+        '<div class="lesson-shell">' +
+          '<main class="main-column">' +
+            '<section class="card" id="title"><div class="card__body"><h1 class="lesson-title">' + escapeHtml(lesson.title || 'عنوان الدرس') + '</h1><div class="summary-text">هذا المحتوى منشور بصيغة SCORM مع الحفاظ على نفس الهيكل البصري المستخدم داخل المنصة التعليمية.</div></div></section>' +
+            renderObjectives(objectives) +
+            renderSections(sections) +
+            renderInteractiveCards(cards) +
+            renderVideo(state.lessonData.video) +
+            renderSimulation() +
+            renderConceptMap(state.lessonData.conceptMap) +
+            renderQuiz(state.lessonData.quiz || []) +
+          '</main>' +
+          '<aside class="side-column">' +
+            renderSummary(state.lessonData.summary) +
+            renderGlossary(terms) +
+          '</aside>' +
+        '</div>' +
+      '</div>';
+
+    var scoreSlot = document.getElementById('quiz-score-slot');
+    if (scoreSlot) {
+      var submitted = Object.keys(state.quizAnswers).length && Object.values(state.quizAnswers).every(function (answer) { return answer.submitted; });
+      if (submitted && Array.isArray(state.lessonData.quiz) && state.lessonData.quiz.length) {
+        var total = state.lessonData.quiz.length;
+        var score = Object.values(state.quizAnswers).filter(function (answer) { return answer.correct; }).length;
+        var pct = Math.round((score / total) * 100);
+        scoreSlot.innerHTML = '<div class="quiz-score"><div class="quiz-score__value">' + pct + '%</div><p>' + score + ' من ' + total + ' إجابة صحيحة</p></div>';
+      } else {
+        scoreSlot.innerHTML = '';
+      }
+    }
+
+    bindEvents();
+    syncLayoutMode();
+  }
+
+  function bindEvents() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-toggle-card]'), function (button) {
+      button.addEventListener('click', function () {
+        var target = document.getElementById(button.getAttribute('data-toggle-card'));
+        if (!target) return;
+        target.hidden = !target.hidden;
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-quiz-option]'), function (input) {
+      input.addEventListener('change', function () {
+        var parts = input.getAttribute('data-quiz-option').split(':');
+        var qIndex = Number(parts[0]);
+        var optIndex = Number(parts[1]);
+        state.quizAnswers[qIndex] = { selected: optIndex, submitted: false, correct: false };
+      });
+    });
+
+    var submitQuizBtn = document.querySelector('[data-submit-quiz]');
+    if (submitQuizBtn) {
+      submitQuizBtn.addEventListener('click', function () {
+        var quiz = Array.isArray(state.lessonData.quiz) ? state.lessonData.quiz : [];
+        quiz.forEach(function (q, index) {
+          var answer = state.quizAnswers[index] || { selected: -1 };
+          var selectedOption = (q.options || [])[answer.selected] || '';
+          state.quizAnswers[index] = {
+            selected: answer.selected,
+            submitted: true,
+            correct: selectedOption === q.answer,
+          };
+        });
+        updateScormScore();
+        render();
+      });
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-sim-choice]'), function (button) {
+      button.addEventListener('click', function () {
+        if (state.simulationFeedback) return;
+        var current = getSimulationStep();
+        if (!current || !Array.isArray(current.choices)) return;
+        var selectedId = button.getAttribute('data-sim-choice');
+        var selected = current.choices.find(function (choice) { return String(choice.id) === String(selectedId); });
+        if (!selected) return;
+        if (selected.correct) state.simulationScore += 1;
+        state.simulationFeedback = { selected: selected.id, correct: !!selected.correct, text: selected.feedback || '' };
+        render();
+      });
+    });
+
+    var inputCheckBtn = document.querySelector('[data-check-input]');
+    if (inputCheckBtn) {
+      inputCheckBtn.addEventListener('click', function () {
+        if (state.simulationFeedback) return;
+        var current = getSimulationStep();
+        var input = document.getElementById('sim-answer');
+        if (!current || !input) return;
+        var value = input.value.trim().toLowerCase();
+        var keywords = Array.isArray(current.expectedKeywords) ? current.expectedKeywords : [];
+        var matched = keywords.filter(function (keyword) { return value.indexOf(String(keyword).toLowerCase()) >= 0; });
+        var correct = matched.length >= Math.ceil((keywords.length || 1) / 2);
+        if (correct) state.simulationScore += 1;
+        state.simulationFeedback = {
+          selected: 'input',
+          correct: correct,
+          text: correct
+            ? ('✓ إجابة جيدة! ذكرت ' + matched.length + ' من المفاهيم الأساسية.')
+            : ('يمكن تحسين الإجابة. ركّز على: ' + keywords.join('، ')),
+        };
+        render();
+      });
+    }
+
+    var nextSimBtn = document.querySelector('[data-next-sim]');
+    if (nextSimBtn) {
+      nextSimBtn.addEventListener('click', function () {
+        var simulation = state.lessonData.simulation;
+        if (!simulation || !Array.isArray(simulation.steps)) return;
+        if (state.simulationStep < simulation.steps.length - 1) {
+          state.simulationStep += 1;
+          state.simulationFeedback = null;
+        } else {
+          state.simulationDone = true;
+        }
+        render();
+      });
+    }
+
+    var resetSimBtn = document.querySelector('[data-reset-sim]');
+    if (resetSimBtn) {
+      resetSimBtn.addEventListener('click', function () {
+        state.simulationStep = 0;
+        state.simulationFeedback = null;
+        state.simulationScore = 0;
+        state.simulationDone = false;
+        render();
+      });
+    }
+  }
+
+  function syncLayoutMode() {
+    var shell = document.querySelector('.lesson-shell');
+    if (!shell) return;
+    shell.dataset.layout = window.innerWidth <= 1100 ? 'stacked' : 'two-columns';
+  }
+
+  function findScormApi(win) {
+    while (win) {
+      try {
+        if (win.API) return win.API;
+      } catch (err) {}
+      if (win.parent && win.parent !== win) win = win.parent;
+      else break;
+    }
+    return null;
+  }
+
+  var api = findScormApi(window);
+  function initScorm() {
+    if (!api) return;
+    try { api.LMSInitialize(''); } catch (err) {}
+  }
+  function updateScormScore() {
+    if (!api || !Array.isArray(state.lessonData.quiz) || !state.lessonData.quiz.length) return;
+    try {
+      var total = state.lessonData.quiz.length;
+      var score = Object.values(state.quizAnswers).filter(function (answer) { return answer.correct; }).length;
+      var pct = Math.round((score / total) * 100);
+      api.LMSSetValue('cmi.core.score.raw', String(pct));
+      api.LMSSetValue('cmi.core.lesson_status', pct >= 60 ? 'passed' : 'completed');
+      api.LMSCommit('');
+    } catch (err) {}
+  }
+  function closeScorm() {
+    if (!api) return;
+    try { api.LMSCommit(''); api.LMSFinish(''); } catch (err) {}
+  }
+
+  window.addEventListener('resize', syncLayoutMode);
+  window.addEventListener('beforeunload', closeScorm);
+  initScorm();
+  render();
+})();
+`;
 
   const manifest = `<?xml version="1.0" encoding="UTF-8"?>
 <manifest identifier="ai-lesson" version="1.0"
@@ -197,28 +960,32 @@ function submitQuiz() {
   <metadata><schema>ADL SCORM</schema><schemaversion>1.2</schemaversion></metadata>
   <organizations default="org1">
     <organization identifier="org1">
-      <title>${lesson.title}</title>
+      <title>${escapeXml(lesson.title)}</title>
       <item identifier="item1" identifierref="res1">
-        <title>${lesson.title}</title>
+        <title>${escapeXml(lesson.title)}</title>
       </item>
     </organization>
   </organizations>
   <resources>
     <resource identifier="res1" type="webcontent" adlcp:scormtype="sco" href="index.html">
       <file href="index.html"/>
+      <file href="styles.css"/>
+      <file href="script.js"/>
     </resource>
   </resources>
 </manifest>`;
 
-  return { indexHTML, manifest };
+  return { indexHTML, stylesCSS, scriptJS, manifest };
 }
 
 async function downloadSCORM(lessonData) {
   const { default: JSZip } = await import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm");
-  const { indexHTML, manifest } = generateSCORM(lessonData);
+  const { indexHTML, stylesCSS, scriptJS, manifest } = generateSCORM(lessonData);
   const zip = new JSZip();
   zip.file("imsmanifest.xml", manifest);
   zip.file("index.html", indexHTML);
+  zip.file("styles.css", stylesCSS);
+  zip.file("script.js", scriptJS);
   const blob = await zip.generateAsync({ type: "blob" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -229,7 +996,7 @@ async function downloadSCORM(lessonData) {
 }
 
 // ── Enrich Options Panel ───────────────────────────────────────────────────
-function EnrichPanel({ options, onChange }) {
+function EnrichPanel({ options, onChange, compact = false }) {
   const items = [
     {
       key: "images",
@@ -272,7 +1039,7 @@ function EnrichPanel({ options, onChange }) {
   const selectedCount = Object.values(options).filter(Boolean).length;
 
   return (
-    <div style={ep.wrap}>
+    <div style={{ ...ep.wrap, ...(compact ? ep.wrapCompact : {}) }}>
       {/* Header */}
       <div style={ep.header}>
         <div style={ep.headerIcon}>✨</div>
@@ -325,6 +1092,7 @@ function EnrichPanel({ options, onChange }) {
 
 const ep = {
   wrap: { background: "#fff", border: "1px solid #e8eaf6", borderRadius: "20px", padding: "22px", marginBottom: "20px", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" },
+  wrapCompact: { marginBottom: 0, borderRadius: "16px", padding: "18px" },
   header: { display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" },
   headerIcon: { width: "40px", height: "40px", background: "linear-gradient(135deg, #1a237e, #7c3aed)", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px", flexShrink: 0 },
   title: { fontWeight: 700, fontSize: "15px", color: "#1a237e" },
@@ -351,6 +1119,13 @@ function TextModal({ file, onClose }) {
   const [error, setError] = useState("");
   const [enrichOpts, setEnrichOpts] = useState({ images: true, video: true, simulation: true, conceptMap: true });
   const [genStatus, setGenStatus] = useState("");
+  const [isNarrow, setIsNarrow] = useState(() => (typeof window !== "undefined" ? window.innerWidth < 1080 : false));
+
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 1080);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(() => {
     setLoading(true);
@@ -429,6 +1204,11 @@ function TextModal({ file, onClose }) {
     { key: "lesson", label: `الدرس ${lessonData ? "✓" : ""}`, disabled: !lessonData },
   ];
 
+  const sourceChars = extractedText ? extractedText.length : 0;
+  const sourceWords = extractedText ? extractedText.trim().split(/\s+/).filter(Boolean).length : 0;
+  const sourceLines = extractedText ? extractedText.split("\n").length : 0;
+  const fileKind = file.name.toLowerCase().endsWith(".pdf") ? "PDF" : "DOCX";
+
   return (
     <div style={modal.overlay}>
       <div style={modal.box}>
@@ -436,6 +1216,7 @@ function TextModal({ file, onClose }) {
           <div style={modal.headerLeft}>
             <span style={{ fontSize: "22px" }}>{file.name.endsWith(".pdf") ? "📄" : "📝"}</span>
             <div>
+              <div style={modal.projectName}>EduAI Studio · منصة الترجمة التعليمية</div>
               <div style={modal.headerTitle}>{file.name}</div>
               <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.6)", marginTop: "2px" }}>
                 {extractedText ? `${extractedText.length.toLocaleString()} حرف` : ""}
@@ -457,12 +1238,88 @@ function TextModal({ file, onClose }) {
 
           {tab === "original" && (loading
             ? <div style={modal.centered}><Spinner /><p style={{ color: "#aaa", fontSize: "13px" }}>جارٍ استخراج النص...</p></div>
-            : <pre style={modal.textBox}>{extractedText}</pre>)}
+            : <div style={modal.workspaceWrap}>
+                <div style={modal.originalHero}>
+                  <div style={modal.originalHeroIcon}>📘</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={modal.originalHeroTitle}>النص الأصلي المستخرج</div>
+                    <div style={modal.originalHeroSub}>محتوى المصدر قبل الترجمة، جاهز للمراجعة ثم التحويل إلى العربية.</div>
+                  </div>
+                  <div style={modal.originalFileType}>{fileKind}</div>
+                </div>
+
+                <div style={{ ...modal.originalGrid, gridTemplateColumns: isNarrow ? "1fr" : "300px 1fr" }}>
+                  <div style={modal.originalSide}>
+                    <div style={modal.originalInfoCard}>
+                      <div style={modal.originalInfoTitle}>معلومات الملف</div>
+                      <div style={modal.originalFileName}>{file.name}</div>
+                      <div style={modal.originalStatsGrid}>
+                        <div style={modal.originalStatItem}>
+                          <div style={modal.originalStatValue}>{sourceChars.toLocaleString()}</div>
+                          <div style={modal.originalStatLabel}>حرف</div>
+                        </div>
+                        <div style={modal.originalStatItem}>
+                          <div style={modal.originalStatValue}>{sourceWords.toLocaleString()}</div>
+                          <div style={modal.originalStatLabel}>كلمة</div>
+                        </div>
+                        <div style={modal.originalStatItem}>
+                          <div style={modal.originalStatValue}>{sourceLines.toLocaleString()}</div>
+                          <div style={modal.originalStatLabel}>سطر</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={modal.originalTipCard}>
+                      <div style={modal.originalTipTitle}>تدفق العمل</div>
+                      <div style={modal.originalTipText}>1) راجع النص الأصلي سريعًا</div>
+                      <div style={modal.originalTipText}>2) اضغط زر الترجمة إلى العربية</div>
+                      <div style={modal.originalTipText}>3) اختر عناصر الإثراء ثم أنشئ الدرس</div>
+                    </div>
+                  </div>
+
+                  <div style={modal.originalMain}>
+                    <div style={modal.translationHeaderRow}>
+                      <div style={modal.translationHeading}>معاينة النص الأصلي</div>
+                      <div style={modal.translationMeta}>جاهز للترجمة</div>
+                    </div>
+                    <pre style={{ ...modal.textBox, ...modal.originalTextBox }}>{extractedText}</pre>
+                  </div>
+                </div>
+              </div>)}
 
           {tab === "arabic" && translatedText && (
-            <div>
-              {!lessonData && <EnrichPanel options={enrichOpts} onChange={setEnrichOpts} />}
-              <pre style={{ ...modal.textBox, direction: "rtl", textAlign: "right" }}>{translatedText}</pre>
+            <div style={modal.workspaceWrap}>
+              <div style={modal.workspaceHero}>
+                <div style={modal.workspaceHeroIcon}>🎯</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={modal.workspaceTitle}>استوديو الترجمة والإثراء</div>
+                  <div style={modal.workspaceSub}>راجع النص المترجم على اليسار، واختر عناصر الإثراء من اللوحة اليمنى قبل إنشاء الدرس.</div>
+                </div>
+                <div style={modal.workspaceBadge}>{Object.values(enrichOpts).filter(Boolean).length} خيارات مفعّلة</div>
+              </div>
+
+              <div
+                style={{
+                  ...modal.workspaceGrid,
+                  gridTemplateColumns: isNarrow ? "1fr" : "320px 1fr",
+                }}
+              >
+                <div style={modal.workspaceSide}>
+                  {!lessonData && <EnrichPanel options={enrichOpts} onChange={setEnrichOpts} compact />}
+                  <div style={modal.workspaceTipCard}>
+                    <div style={modal.workspaceTipTitle}>اقتراح سريع</div>
+                    <div style={modal.workspaceTipText}>لأفضل تجربة تعليمية: فعّل الصور + المحاكاة + خريطة المفاهيم، ثم اضغط على إنشاء درس مُثرى.</div>
+                  </div>
+                </div>
+
+                <div style={modal.workspaceMain}>
+                  <div style={modal.translationHeaderRow}>
+                    <div style={modal.translationHeading}>النص المترجم</div>
+                    <div style={modal.translationMeta}>{translatedText.length.toLocaleString()} حرف</div>
+                  </div>
+                  <pre style={{ ...modal.textBox, ...modal.translationTextBox }}>{translatedText}</pre>
+                </div>
+              </div>
             </div>
           )}
 
@@ -890,6 +1747,7 @@ const modal = {
   box: { background: "#f0f4ff", width: "100%", height: "100%", display: "flex", flexDirection: "column" },
   header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 28px", background: "linear-gradient(135deg, #0d1b6e, #1a237e, #7c3aed)", flexShrink: 0 },
   headerLeft: { display: "flex", alignItems: "center", gap: "12px", minWidth: 0 },
+  projectName: { fontSize: "11px", color: "rgba(255,255,255,0.78)", fontWeight: 700, marginBottom: "3px", letterSpacing: "0.2px" },
   headerTitle: { fontWeight: 700, fontSize: "16px", color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   closeBtn: { background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", fontSize: "16px", cursor: "pointer", color: "#fff", borderRadius: "8px", padding: "6px 14px", flexShrink: 0, fontWeight: 600 },
   tabs: { display: "flex", gap: "0", padding: "0 28px", borderBottom: "2px solid #e8eaf6", background: "#fff", flexShrink: 0 },
@@ -897,6 +1755,41 @@ const modal = {
   tabActive: { color: "#7c3aed", borderBottom: "3px solid #7c3aed", fontWeight: 700 },
   body: { flex: 1, overflow: "auto", padding: "28px 32px" },
   textBox: { margin: "0 auto", whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: "14px", lineHeight: 1.8, color: "#333", background: "#fff", border: "1px solid #e8eaf6", borderRadius: "12px", padding: "24px", fontFamily: "inherit", maxWidth: "900px" },
+  workspaceWrap: { maxWidth: "1160px", margin: "0 auto" },
+  originalHero: { background: "linear-gradient(120deg, #ffffff 0%, #f7f7ff 100%)", border: "1px solid #e4e6ff", borderRadius: "16px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" },
+  originalHeroIcon: { width: "40px", height: "40px", borderRadius: "12px", background: "linear-gradient(135deg, #0f766e, #14b8a6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px", color: "#fff", flexShrink: 0 },
+  originalHeroTitle: { color: "#0f172a", fontSize: "15px", fontWeight: 800, marginBottom: "3px" },
+  originalHeroSub: { color: "#64748b", fontSize: "12px", lineHeight: 1.7 },
+  originalFileType: { background: "linear-gradient(135deg, #1d4ed8, #2563eb)", color: "#fff", borderRadius: "999px", padding: "6px 12px", fontSize: "12px", fontWeight: 800, letterSpacing: "0.5px", flexShrink: 0 },
+  originalGrid: { display: "grid", gap: "14px", alignItems: "start" },
+  originalSide: { display: "flex", flexDirection: "column", gap: "12px", position: "sticky", top: "10px" },
+  originalInfoCard: { background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: "14px", padding: "14px" },
+  originalInfoTitle: { color: "#1e293b", fontSize: "12px", fontWeight: 800, marginBottom: "8px" },
+  originalFileName: { color: "#475569", fontSize: "12px", lineHeight: 1.8, marginBottom: "10px", wordBreak: "break-word" },
+  originalStatsGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: "8px" },
+  originalStatItem: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "8px 6px", textAlign: "center" },
+  originalStatValue: { color: "#0f172a", fontSize: "13px", fontWeight: 800, lineHeight: 1.2 },
+  originalStatLabel: { color: "#64748b", fontSize: "11px", marginTop: "3px" },
+  originalTipCard: { background: "#ecfeff", border: "1px solid #a5f3fc", borderRadius: "12px", padding: "12px 14px" },
+  originalTipTitle: { color: "#155e75", fontSize: "12px", fontWeight: 800, marginBottom: "6px" },
+  originalTipText: { color: "#0e7490", fontSize: "12px", lineHeight: 1.8 },
+  originalMain: { background: "#fff", borderRadius: "16px", border: "1px solid #e8eaf6", boxShadow: "0 2px 12px rgba(15,23,42,0.06)", padding: "14px" },
+  originalTextBox: { maxWidth: "none", margin: 0, minHeight: "420px", background: "linear-gradient(180deg, #ffffff 0%, #fbfdff 100%)", borderColor: "#e5e7eb", borderRadius: "14px" },
+  workspaceHero: { background: "linear-gradient(120deg, #ffffff 0%, #f7f8ff 100%)", border: "1px solid #e6e8ff", borderRadius: "16px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" },
+  workspaceHeroIcon: { width: "40px", height: "40px", borderRadius: "12px", background: "linear-gradient(135deg, #1a237e, #7c3aed)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px", color: "#fff", flexShrink: 0 },
+  workspaceTitle: { fontSize: "15px", fontWeight: 800, color: "#1a237e", marginBottom: "2px" },
+  workspaceSub: { fontSize: "12px", color: "#64748b", lineHeight: 1.7 },
+  workspaceBadge: { background: "linear-gradient(135deg, #0ea5e9, #0284c7)", color: "#fff", borderRadius: "999px", padding: "6px 12px", fontSize: "12px", fontWeight: 700, flexShrink: 0 },
+  workspaceGrid: { display: "grid", gap: "14px", alignItems: "start" },
+  workspaceSide: { display: "flex", flexDirection: "column", gap: "12px", position: "sticky", top: "10px" },
+  workspaceMain: { background: "#fff", borderRadius: "16px", border: "1px solid #e8eaf6", boxShadow: "0 2px 12px rgba(15,23,42,0.06)", padding: "14px" },
+  translationHeaderRow: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px", padding: "2px 4px" },
+  translationHeading: { color: "#1a237e", fontSize: "14px", fontWeight: 800 },
+  translationMeta: { color: "#64748b", fontSize: "12px", fontWeight: 600 },
+  translationTextBox: { maxWidth: "none", margin: 0, minHeight: "380px", background: "linear-gradient(180deg, #ffffff 0%, #fbfcff 100%)", borderColor: "#e5e7eb", borderRadius: "14px" },
+  workspaceTipCard: { background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "12px", padding: "12px 14px" },
+  workspaceTipTitle: { color: "#075985", fontSize: "12px", fontWeight: 800, marginBottom: "4px" },
+  workspaceTipText: { color: "#0369a1", fontSize: "12px", lineHeight: 1.7 },
   centered: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "16px", minHeight: "200px" },
   error: { background: "#fff5f5", border: "1px solid #fed7d7", color: "#c53030", borderRadius: "10px", padding: "12px 16px", fontSize: "13px", maxWidth: "900px", margin: "0 auto 16px" },
   footer: { padding: "16px 28px", borderTop: "2px solid #e8eaf6", display: "flex", justifyContent: "flex-end", gap: "10px", flexWrap: "wrap", background: "#fff", flexShrink: 0 },

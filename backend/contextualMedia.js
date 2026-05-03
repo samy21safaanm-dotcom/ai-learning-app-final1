@@ -562,6 +562,66 @@ async function searchWikimediaCommons({ lessonContext = {}, instruction = "", ca
   return [];
 }
 
+// ─── Openverse API (free, no key, semantically relevant CC-licensed images) ──
+async function searchOpenverseImages({ lessonContext = {}, instruction = "", category = "photo", maxResults = 8 }) {
+  const { resolvedCategory, profile, englishTags, topicTag, hasSpecificTopic, userQuery } = buildMediaSearchPhrases({ lessonContext, instruction, category, limit: 4 });
+
+  // Build the best possible English query
+  const englishQuery = hasSpecificTopic
+    ? `${englishTags.slice(0, 2).join(" ")} educational`
+    : instruction.trim() || "educational";
+
+  const categoryFilter = resolvedCategory === "photo" ? "photograph" : resolvedCategory === "illustration" ? "illustration" : "educational";
+
+  const queries = hasSpecificTopic
+    ? [englishTags.slice(0, 2).join(" "), englishTags[0], `${englishTags[0]} ${categoryFilter}`]
+    : [instruction.trim(), `${instruction.trim()} educational`].filter(Boolean);
+
+  for (const q of queries) {
+    try {
+      const url = new URL("https://api.openverse.org/v1/images/");
+      url.searchParams.set("q", q);
+      url.searchParams.set("format", "json");
+      url.searchParams.set("page_size", String(Math.min(maxResults + 4, 20)));
+      url.searchParams.set("mature", "false");
+
+      const res = await fetch(url, {
+        headers: { Accept: "application/json", "User-Agent": "ai-learning-app/1.0" },
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!res.ok) continue;
+      const data = await res.json().catch(() => null);
+      if (!data?.results?.length) continue;
+
+      const items = data.results
+        .filter(r => r.url && r.url.startsWith("http"))
+        .map((r, index) => ({
+          id: `openverse-${resolvedCategory}-${r.id || index}`,
+          title: cleanText(r.title || userQuery || "صورة تعليمية", 80),
+          caption: [r.creator ? `بواسطة ${cleanText(r.creator, 40)}` : null, r.license ? `ترخيص ${r.license.toUpperCase()}` : null].filter(Boolean).join(" · ") || `${profile.arabicLabel} من Openverse`,
+          source: "stock",
+          category: resolvedCategory,
+          searchMode: "live",
+          providerLabel: "Openverse",
+          previewType: "image",
+          url: r.url,
+          externalUrl: r.foreign_landing_url || r.url,
+        }));
+
+      if (items.length >= 2) {
+        console.log(`[searchOpenverseImages] "${q}" → ${items.length} results`);
+        return items.slice(0, maxResults);
+      }
+    } catch (e) {
+      console.error(`[searchOpenverseImages] "${q}" failed:`, e.message);
+    }
+  }
+
+  console.log("[searchOpenverseImages] all queries returned <2 results");
+  return [];
+}
+
 function uniqueByUrl(items) {
   const seen = new Set();
   return (items || []).filter((item) => {
@@ -681,7 +741,12 @@ async function getContextualImageCandidates({ lessonContext = {}, instruction = 
 
   console.log("[contextualMedia] Stock image request", { category: resolvedCategory, instruction: cleanText(instruction, 120) });
 
-  // Priority chain: Pexels (paid) → Wikimedia Commons (free, actual image files) → Wikipedia (free, article thumbnails) → Unsplash fallback
+  // Priority chain:
+  // 1. Pexels (paid, best quality if key available)
+  // 2. Openverse (free, no key, semantically relevant CC images) ← NEW primary free source
+  // 3. Wikimedia Commons (free, scientific images)
+  // 4. Wikipedia article thumbnails
+  // 5. Unsplash URL fallback
   try {
     const pexelsItems = await searchPexelsImages({ lessonContext, instruction, category: resolvedCategory, maxResults });
     if (pexelsItems?.length) {
@@ -690,6 +755,16 @@ async function getContextualImageCandidates({ lessonContext = {}, instruction = 
     }
   } catch (error) {
     console.error("[contextualMedia] Pexels image search failed:", error.message);
+  }
+
+  try {
+    const openverseItems = await searchOpenverseImages({ lessonContext, instruction, category: resolvedCategory, maxResults });
+    if (openverseItems?.length) {
+      console.log(`[contextualMedia] Openverse returned ${openverseItems.length} results`);
+      return uniqueByUrl(openverseItems).slice(0, maxResults);
+    }
+  } catch (error) {
+    console.error("[contextualMedia] Openverse image search failed:", error.message);
   }
 
   try {
@@ -968,21 +1043,136 @@ function createComparisonRows(lessonContext = {}) {
   return (lessonContext.keyTerms || []).slice(0, 4).map((term) => ({ label: cleanText(term.term, 26), value: cleanText(term.definition, 60) }));
 }
 
-function createContextualChartPreview({ lessonContext = {}, instruction = "", chartType = "infographic" }) {
-  const title = cleanText(instruction || lessonContext.title || "مخطط تعليمي", 42);
-  const sections = (lessonContext.sections || []).slice(0, 4);
-  const keyTerms = (lessonContext.keyTerms || []).slice(0, 5);
-  const rows = createComparisonRows(lessonContext);
-  const accent = chartType === "timeline" ? "#f59e0b" : chartType === "comparison" ? "#059669" : chartType === "concept-map" ? "#0ea5e9" : "#7c3aed";
+function buildTopicAwareInfographicItems(topic, englishTags = []) {
+  const tag = String(englishTags[0] || "").toLowerCase();
 
-  const svg = chartType === "comparison"
-    ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620"><rect width="960" height="620" rx="28" fill="#fff"/><text x="56" y="72" font-size="34" font-weight="700" fill="#0f172a" font-family="Cairo, Arial">${escapeXml(title)}</text><text x="56" y="110" font-size="18" fill="#64748b" font-family="Cairo, Arial">مقارنة سياقية مبنية على الدرس الحالي</text>${rows.map((row, i) => `<rect x="56" y="${150 + i * 100}" width="220" height="64" rx="18" fill="${accent}18"/><text x="80" y="${190 + i * 100}" font-size="21" font-weight="700" fill="${accent}" font-family="Cairo, Arial">${escapeXml(row.label)}</text><rect x="308" y="${150 + i * 100}" width="596" height="64" rx="18" fill="#f8fafc" stroke="#e2e8f0"/><text x="336" y="${190 + i * 100}" font-size="18" fill="#334155" font-family="Cairo, Arial">${escapeXml(row.value)}</text>`).join("")}</svg>`
-    : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620"><rect width="960" height="620" rx="28" fill="#ffffff"/><text x="56" y="72" font-size="34" font-weight="700" fill="#0f172a" font-family="Cairo, Arial">${escapeXml(title)}</text><text x="56" y="110" font-size="18" fill="#64748b" font-family="Cairo, Arial">${escapeXml(cleanText(lessonContext.title, 80) || "تنظيم بصري سياقي")}</text>${(sections.length ? sections : keyTerms.map((term) => ({ heading: term.term, content: term.definition }))).slice(0, 4).map((item, i) => { const x = i % 2 === 0 ? 56 : 504; const y = 170 + Math.floor(i / 2) * 180; return `<rect x="${x}" y="${y}" width="400" height="126" rx="24" fill="${accent}14" stroke="${accent}44" stroke-width="2"/><text x="${x + 28}" y="${y + 44}" font-size="24" font-weight="700" fill="${accent}" font-family="Cairo, Arial">${escapeXml(cleanText(item.heading || item.term, 26))}</text><text x="${x + 28}" y="${y + 84}" font-size="18" fill="#334155" font-family="Cairo, Arial">${escapeXml(cleanText(item.content || item.definition, 76))}</text>`; }).join("")}<path d="M480 250 L480 380" stroke="${accent}" stroke-width="8" stroke-linecap="round" /></svg>`;
+  if (tag.includes("computer hardware") || tag.includes("cpu")) {
+    return [
+      { heading: "ما هي وحدة المعالجة؟", content: "المعالج هو العقل التنفيذي للحاسب وينفذ التعليمات." },
+      { heading: "المكونات الرئيسية", content: "وحدة التحكم، وحدة الحساب والمنطق، والسجلات الداخلية." },
+      { heading: "كيف تعمل؟", content: "تجلب التعليمة ثم تفك ترميزها ثم تنفذها على البيانات." },
+      { heading: "عوامل الأداء", content: "التردد، عدد الأنوية، حجم الكاش، ومعمارية المعالج." },
+    ];
+  }
+
+  if (tag.includes("augmented reality") || tag.includes("mixed reality")) {
+    return [
+      { heading: "تعريف الواقع المعزز", content: "تقنية تدمج عناصر رقمية مع المشهد الحقيقي مباشرة." },
+      { heading: "المكونات", content: "كاميرا، تتبع حركة، معالجة آنية، وشاشة عرض تفاعلية." },
+      { heading: "أمثلة تطبيق", content: "التعليم، الصيانة، الطب، والتدريب الصناعي." },
+      { heading: "القيمة التعليمية", content: "يزيد الفهم عبر التفاعل البصري وربط المفهوم بالتطبيق." },
+    ];
+  }
+
+  if (tag.includes("virtual reality") || tag.includes("vr")) {
+    return [
+      { heading: "تعريف الواقع الافتراضي", content: "بيئة رقمية غامرة تحاكي العالم الحقيقي أو الخيالي." },
+      { heading: "عناصر النظام", content: "نظارة VR، مستشعرات حركة، صوت ثلاثي، ومحرك رسوم." },
+      { heading: "سير التجربة", content: "المستخدم يتحرك داخل مشهد تفاعلي وفق مدخلاته." },
+      { heading: "فوائد التعليم", content: "تعلم بالمحاكاة، تقليل المخاطر، ورفع التفاعل." },
+    ];
+  }
+
+  return [
+    { heading: "تعريف", content: `المفهوم الأساسي لموضوع ${topic} بصورة مبسطة.` },
+    { heading: "المكونات", content: `أهم عناصر ${topic} وكيف ترتبط ببعضها.` },
+    { heading: "آلية العمل", content: `الخطوات العملية لفهم ${topic} من البداية للنهاية.` },
+    { heading: "التطبيقات", content: `أمثلة تعليمية واستخدامات واقعية لموضوع ${topic}.` },
+  ];
+}
+
+function createContextualChartPreview({ lessonContext = {}, instruction = "", chartType = "infographic" }) {
+  // instruction (what user typed) always takes priority over lessonContext.title
+  const topic = cleanText(instruction || lessonContext.title || "مخطط تعليمي", 60);
+
+  // Decide content: use lesson sections ONLY when instruction closely matches lesson title
+  const userTopicMatchesLesson =
+    !instruction.trim() ||
+    (lessonContext.title && instruction.trim() === lessonContext.title.trim());
+
+  let contentItems;
+  if (userTopicMatchesLesson && (lessonContext.sections || []).length >= 2) {
+    contentItems = lessonContext.sections.slice(0, 4).map(s => ({
+      heading: cleanText(s.heading || "", 50),
+      content: cleanText(s.content || "", 180),
+    }));
+  } else if (userTopicMatchesLesson && (lessonContext.keyTerms || []).length >= 2) {
+    contentItems = lessonContext.keyTerms.slice(0, 4).map(t => ({
+      heading: cleanText(t.term || "", 50),
+      content: cleanText(t.definition || "", 180),
+    }));
+  } else {
+    // instruction differs from lesson — create topic-aware infographic cards
+    const tags = getEnglishTags(lessonContext, instruction || topic);
+    contentItems = buildTopicAwareInfographicItems(topic, tags);
+  }
+
+  // Ensure we always have 4 items
+  while (contentItems.length < 4) {
+    contentItems.push({ heading: `جانب ${contentItems.length + 1}`, content: `معلومة تعليمية ذات صلة بموضوع ${topic}.` });
+  }
+
+  // Card colors (4 distinct pastel colors)
+  const palette = [
+    { bg: "#ede9fe", border: "#c4b5fd", heading: "#6d28d9" },
+    { bg: "#dbeafe", border: "#93c5fd", heading: "#1d4ed8" },
+    { bg: "#dcfce7", border: "#86efac", heading: "#15803d" },
+    { bg: "#fef9c3", border: "#fde047", heading: "#a16207" },
+  ];
+
+  const W = 860;
+  const cardW = 400;
+  const cardH = 205;
+  const col1x = 15;
+  const col2x = 445;
+  const row1y = 105;
+  const row2y = 325;
+  const H = row2y + cardH + 45; // ~575
+
+  const headerAccent = "#7c3aed";
+
+  // Build 4 card rectangles + foreignObject content (handles RTL Arabic text natively)
+  const cards = contentItems.slice(0, 4).map((item, i) => {
+    const { bg, border, heading: headingColor } = palette[i];
+    const x = i % 2 === 0 ? col1x : col2x;
+    const y = i < 2 ? row1y : row2y;
+    const headingHtml = escapeXml(item.heading);
+    const contentHtml = escapeXml(item.content);
+    return `<rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="18" fill="${bg}" stroke="${border}" stroke-width="1.5"/>
+<foreignObject x="${x}" y="${y}" width="${cardW}" height="${cardH}">
+<div xmlns="http://www.w3.org/1999/xhtml" style="direction:rtl;padding:18px 20px 14px;font-family:Cairo,Arial,sans-serif;box-sizing:border-box;width:100%;height:100%;overflow:hidden">
+<div style="font-size:16px;font-weight:800;color:${headingColor};margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid ${border}">${headingHtml}</div>
+<div style="font-size:13px;color:#334155;line-height:1.65;word-break:break-word;overflow-wrap:break-word">${contentHtml}</div>
+</div>
+</foreignObject>`;
+  }).join("\n");
+
+  const topicEscaped = escapeXml(topic);
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}">
+<rect width="${W}" height="${H}" rx="24" fill="#ffffff"/>
+<rect width="${W}" height="90" rx="24" fill="${headerAccent}"/>
+<rect y="66" width="${W}" height="24" fill="${headerAccent}"/>
+<foreignObject x="0" y="0" width="${W}" height="90">
+<div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;align-items:center;justify-content:space-between;height:90px;padding:0 24px;direction:rtl;font-family:Cairo,Arial,sans-serif;box-sizing:border-box">
+<span style="font-size:24px;font-weight:900;color:white;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70%">${topicEscaped}</span>
+<span style="font-size:13px;color:rgba(255,255,255,0.8);white-space:nowrap">&#x1F4CA; إنفوجرافيك تعليمي</span>
+</div>
+</foreignObject>
+${cards}
+<rect x="0" y="${H - 30}" width="${W}" height="30" rx="0" fill="#f8f7ff"/>
+<rect x="0" y="${H - 30}" width="${W}" height="30" rx="24" fill="#f8f7ff"/>
+<foreignObject x="0" y="${H - 30}" width="${W}" height="30">
+<div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;align-items:center;justify-content:flex-end;height:30px;padding:0 18px;direction:rtl;font-family:Cairo,Arial,sans-serif">
+<span style="font-size:11px;color:#94a3b8">مُولَّد تلقائياً · ${topicEscaped}</span>
+</div>
+</foreignObject>
+</svg>`;
 
   return {
-    title,
-    description: `معاينة ${chartType} مبنية على عنوان الدرس والأقسام والمصطلحات الحالية.`,
-    chartType,
+    title: topic,
+    description: `إنفوجرافيك تعليمي عن: ${topic}`,
+    chartType: "infographic",
     svg,
   };
 }

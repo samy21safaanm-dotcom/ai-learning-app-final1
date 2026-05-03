@@ -22,6 +22,92 @@ const C = {
   white: "#ffffff",
 };
 
+function buildStructuredLessonData(lesson = {}, summary = "", imageCards = [], video = null, simulation = null) {
+  const idBase = Date.now();
+  const objectives = Array.isArray(lesson?.objectives) ? lesson.objectives.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  const sections = Array.isArray(lesson?.sections) ? lesson.sections : [];
+  const glossaryItems = Array.isArray(lesson?.keyTerms) ? lesson.keyTerms : [];
+
+  const contentSections = [];
+  sections.forEach((section, index) => {
+    if (section?.heading) {
+      contentSections.push({
+        id: idBase + index * 2 + 1,
+        type: "heading",
+        content: section.heading,
+        editable: true,
+        order: contentSections.length + 1,
+        style: { textColor: "#1a237e", backgroundColor: "#ffffff", fontSize: "18px" },
+      });
+    }
+    if (section?.content) {
+      contentSections.push({
+        id: idBase + index * 2 + 2,
+        type: "paragraph",
+        content: section.content,
+        editable: true,
+        order: contentSections.length + 1,
+        style: { textColor: "#334155", backgroundColor: "#f8fafc", fontSize: "15px" },
+      });
+    }
+  });
+
+  return {
+    main: {
+      title: {
+        id: idBase + 1000,
+        type: "title",
+        content: String(lesson?.title || "").trim() || "عنوان الدرس",
+        editable: true,
+        order: 1,
+        style: { textColor: "#1a237e", backgroundColor: "#ffffff", fontSize: "24px" },
+      },
+      objectives: {
+        id: idBase + 1001,
+        type: "objectives",
+        content: objectives,
+        editable: true,
+        editMode: "group",
+        order: 2,
+        style: { textColor: "#444444", backgroundColor: "#ffffff", fontSize: "15px" },
+      },
+      content_sections: contentSections,
+      interactive_cards: Array.isArray(imageCards)
+        ? imageCards.map((card, index) => ({
+            ...card,
+            id: card?.id || `card-${idBase + index}`,
+            interaction_type: card?.type === "comparison" ? "flip" : card?.type === "steps" ? "reveal" : "quiz",
+            editable: true,
+          }))
+        : [],
+      video: video ? { ...video, type: "video", editable: false } : null,
+      simulation: simulation ? { ...simulation, type: "simulation", editable: false } : null,
+    },
+    sidebar: {
+      summary: {
+        id: idBase + 1002,
+        type: "summary",
+        content: String(summary || "").trim(),
+        position: "top",
+        editable: true,
+        style: { textColor: "#333333", backgroundColor: "#eef2ff", fontSize: "14px" },
+      },
+      glossary: {
+        id: idBase + 1003,
+        type: "glossary",
+        position: "bottom",
+        items: glossaryItems.map((item, index) => ({
+          id: idBase + 2000 + index,
+          term: item?.term || "",
+          definition: item?.definition || "",
+        })),
+        editable: true,
+        style: { textColor: "#374151", backgroundColor: "#ffffff", fontSize: "13px" },
+      },
+    },
+  };
+}
+
 // ── Count-up animation ─────────────────────────────────────────────────────
 function useCountUp(target, duration = 1000) {
   const [val, setVal] = useState(0);
@@ -460,9 +546,85 @@ function VisualCard({ card }) {
   );
 }
 
+// ── Inline Quiz Runner ─────────────────────────────────────────────────────
+function InlineQuizRunner({ block }) {
+  const questions = block.questions || [];
+  const [phase, setPhase] = useState("start"); // start | running | results
+  const [current, setCurrent] = useState(0);
+  const [answers, setAnswers] = useState([]);
+  const [streak, setStreak] = useState(0);
+
+  const handleAnswer = (correct) => {
+    const nextAnswers = [...answers, correct];
+    setAnswers(nextAnswers);
+    setStreak(correct ? streak + 1 : 0);
+    if (current + 1 >= questions.length) {
+      setPhase("results");
+    } else {
+      setCurrent(current + 1);
+    }
+  };
+
+  const handleRetry = () => {
+    setCurrent(0);
+    setAnswers([]);
+    setStreak(0);
+    setPhase("running");
+  };
+
+  if (!questions.length) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "4px 0" }}>
+        <div style={{ width: "40px", height: "40px", background: C.purpleLight, borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px" }}>❔</div>
+        <div style={{ fontWeight: 700, fontSize: "14px", color: C.navy }}>اختبار (لا توجد أسئلة)</div>
+      </div>
+    );
+  }
+
+  if (phase === "start") {
+    return (
+      <div style={{ textAlign: "center", padding: "24px 16px" }}>
+        <div style={{ fontSize: "40px", marginBottom: "12px" }}>🎓</div>
+        <div style={{ fontWeight: 800, fontSize: "18px", color: C.navy, marginBottom: "6px" }}>
+          {block.title || "اختبار تفاعلي"}
+        </div>
+        <div style={{ fontSize: "13px", color: C.gray, marginBottom: "20px" }}>
+          {questions.length} سؤال اختيار من متعدد — هل أنت مستعد؟
+        </div>
+        <button
+          onClick={() => setPhase("running")}
+          style={{ background: `linear-gradient(135deg, ${C.purple}, #5b21b6)`, color: "#fff", border: "none", borderRadius: "14px", padding: "13px 32px", fontWeight: 800, cursor: "pointer", fontSize: "15px", fontFamily: "inherit" }}
+        >
+          ابدأ الاختبار ←
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === "results") {
+    return <Results questions={questions} answers={answers} onRetry={handleRetry} />;
+  }
+
+  return (
+    <QuestionCard
+      question={questions[current]}
+      index={current}
+      total={questions.length}
+      onAnswer={handleAnswer}
+      streak={streak}
+    />
+  );
+}
+
 // ── Lesson Intro ───────────────────────────────────────────────────────────
-function ContentBlock({ block }) {
+function ContentBlock({ block, onEdit, onDelete, isDragging, dragHandlers }) {
   const typeLabels = { text: "نص", heading: "عنوان", image: "صورة", video: "فيديو", chart: "مخطط", quiz: "اختبار", divider: "فاصل" };
+  
+  if (!block) {
+    console.warn("[ContentBlock] Block is null or undefined");
+    return null;
+  }
+
   const embedUrl = (url) => {
     if (!url) return url;
     if (url.includes("youtube.com/watch")) return url.replace("watch?v=", "embed/");
@@ -472,24 +634,39 @@ function ContentBlock({ block }) {
   };
   const isDirectVideo = (url) => /\.(mp4|webm|ogg)(\?|$)/i.test(url || "") || String(url || "").startsWith("blob:") || String(url || "").startsWith("data:video");
   if (block.type === "divider") return <div style={{ height: "2px", background: "linear-gradient(90deg, transparent, #c4b5fd, transparent)", margin: "4px 0" }} />;
+  
+  const blockStyle = block.style || {};
+  
   return (
-    <div style={{ borderRadius: "14px", border: "1px solid #e8eaf6", background: "#fff", overflow: "hidden", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px 16px", borderBottom: "1px solid #f3f4f6", background: "#fafafa" }}>
-        <span style={{ fontSize: "11px", fontWeight: 700, color: "#7c3aed", background: "#ede9fe", padding: "2px 10px", borderRadius: "20px" }}>{typeLabels[block.type] || block.type}</span>
-        {block.type === "image" && <span style={{ fontSize: "11px", color: "#9ca3af" }}>صورة مخصصة</span>}
-        {block.type === "video" && <span style={{ fontSize: "11px", color: "#9ca3af" }}>فيديو مدرج</span>}
-        {block.type === "chart" && <span style={{ fontSize: "11px", color: "#9ca3af" }}>رسم تعليمي</span>}
+    <div draggable {...dragHandlers} style={{ borderRadius: "14px", border: `1px solid ${blockStyle.borderColor || "#e8eaf6"}`, background: blockStyle.backgroundColor || "#fff", overflow: "hidden", boxShadow: "0 2px 8px rgba(0,0,0,0.04)", cursor: dragHandlers ? "grab" : "default", opacity: isDragging ? 0.5 : 1 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px 16px", borderBottom: "1px solid #f3f4f6", background: blockStyle.headerBg || "#fafafa", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {dragHandlers && <span style={{ cursor: "grab", fontSize: "16px" }}>⋮⋮</span>}
+          <span style={{ fontSize: "11px", fontWeight: 700, color: "#7c3aed", background: "#ede9fe", padding: "2px 10px", borderRadius: "20px" }}>{typeLabels[block.type] || block.type}</span>
+          {block.type === "image" && <span style={{ fontSize: "11px", color: "#9ca3af" }}>صورة مخصصة</span>}
+          {block.type === "video" && <span style={{ fontSize: "11px", color: "#9ca3af" }}>فيديو مدرج</span>}
+          {block.type === "chart" && <span style={{ fontSize: "11px", color: "#9ca3af" }}>رسم تعليمي</span>}
+        </div>
+        {(onEdit || onDelete) && (
+          <div style={{ display: "flex", gap: "6px" }}>
+            {onEdit && <button onClick={() => onEdit(block)} style={{ padding: "4px 8px", fontSize: "12px", border: "none", borderRadius: "6px", background: "#e8eaf6", color: "#7c3aed", cursor: "pointer", fontWeight: 600 }}>✏️ تحرير</button>}
+            {onDelete && <button onClick={() => onDelete(block.id)} style={{ padding: "4px 8px", fontSize: "12px", border: "none", borderRadius: "6px", background: "#fee2e2", color: "#dc2626", cursor: "pointer", fontWeight: 600 }}>🗑️ حذف</button>}
+          </div>
+        )}
       </div>
       <div style={{ padding: block.type === "video" ? "0" : "16px" }}>
         {block.type === "text" && (
-          <p style={{ margin: "0", fontSize: "15px", lineHeight: 1.8, color: "#374151",
+          <p style={{ margin: "0", fontSize: blockStyle.fontSize || "15px", lineHeight: blockStyle.lineHeight || 1.8, color: blockStyle.textColor || "#374151",
             fontWeight: block.format?.bold ? 700 : 400,
             fontStyle: block.format?.italic ? "italic" : "normal",
             textDecoration: block.format?.underline ? "underline" : "none",
-            textAlign: block.format?.align || "right" }}>{block.content}</p>
+            textAlign: block.format?.align || "right",
+            backgroundColor: blockStyle.contentBg || "transparent",
+            padding: blockStyle.contentBg ? "12px" : "0",
+            borderRadius: blockStyle.contentBg ? "8px" : "0" }}>{block.content}</p>
         )}
         {block.type === "heading" && (
-          <h3 style={{ margin: "0", fontSize: block.level === "h1" ? "22px" : block.level === "h2" ? "18px" : "15px", fontWeight: 700, color: "#1a237e" }}>{block.content}</h3>
+          <h3 style={{ margin: "0", fontSize: blockStyle.fontSize || (block.level === "h1" ? "22px" : block.level === "h2" ? "18px" : "15px"), fontWeight: 700, color: blockStyle.textColor || "#1a237e", backgroundColor: blockStyle.contentBg || "transparent", padding: blockStyle.contentBg ? "12px" : "0", borderRadius: blockStyle.contentBg ? "8px" : "0" }}>{block.content}</h3>
         )}
         {block.type === "image" && (
           <div>
@@ -521,21 +698,48 @@ function ContentBlock({ block }) {
           </div>
         )}
         {block.type === "quiz" && (
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "4px 0" }}>
-            <div style={{ width: "40px", height: "40px", background: "#ede9fe", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px" }}>❔</div>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: "14px", color: "#1a237e" }}>اختبار تفاعلي</div>
-              <div style={{ fontSize: "12px", color: "#7c3aed" }}>✓ {block.questions?.length || 0} أسئلة تم إضافتها</div>
-            </div>
-          </div>
+          <InlineQuizRunner block={block} />
         )}
       </div>
     </div>
   );
 }
 
-function LessonIntro({ lesson, summary, questionsCount, onStart, images, imageCards, video, simulation, contentBlocks }) {
-  if (simulation) console.log("✅ Simulation received:", simulation.steps?.length, "steps");
+function LessonIntro({
+  structuredLesson,
+  questionsCount,
+  onStart,
+  contentBlocks,
+  onContentAdd,
+  onContentReorder,
+  onEditBlock,
+  onDeleteBlock,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  draggedBlock,
+  onEditTitle,
+  onEditObjectives,
+  onEditSection,
+  onDeleteSection,
+  onAddSection,
+  onEditCard,
+  onDeleteCard,
+  onEditSummary,
+  onEditGlossary,
+}) {
+  const { main, sidebar } = structuredLesson;
+  if (main.simulation) console.log("✅ Simulation received:", main.simulation.steps?.length, "steps");
+
+  const actionBtn = {
+    padding: "4px 8px",
+    borderRadius: "6px",
+    border: "none",
+    fontSize: "12px",
+    fontWeight: 700,
+    cursor: "pointer",
+  };
+
   return (
     <div style={s.introWrap}>
       {/* ── العمود الرئيسي ── */}
@@ -543,11 +747,11 @@ function LessonIntro({ lesson, summary, questionsCount, onStart, images, imageCa
         <div style={s.heroStrip}>
           <div style={s.heroStat}>
             <span style={s.heroLabel}>الأقسام</span>
-            <span style={s.heroValue}>{lesson.sections?.length || 0}</span>
+            <span style={s.heroValue}>{main.content_sections?.length || 0}</span>
           </div>
           <div style={s.heroStat}>
             <span style={s.heroLabel}>المصطلحات</span>
-            <span style={s.heroValue}>{lesson.keyTerms?.length || 0}</span>
+            <span style={s.heroValue}>{sidebar.glossary?.items?.length || 0}</span>
           </div>
           <div style={s.heroStat}>
             <span style={s.heroLabel}>أسئلة التقييم</span>
@@ -555,35 +759,67 @@ function LessonIntro({ lesson, summary, questionsCount, onStart, images, imageCa
           </div>
         </div>
 
-        {lesson.objectives?.length > 0 && (
-          <div style={s.block}>
-            <div style={s.blockHeader}>
-              <span style={s.blockHeaderIcon}>🎯</span>
-              <span style={s.blockHeaderTitle}>أهداف الدرس</span>
+        <div style={s.sectionBlock}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginBottom: "12px" }}>
+            <div style={s.sectionHeadingWrap}>
+              <div style={s.sectionLine} />
+              <h2 style={{ ...s.sectionHeading, fontSize: main.title?.style?.fontSize || "24px", color: main.title?.style?.textColor || C.navy }}>{main.title?.content}</h2>
+            </div>
+            <button style={{ ...actionBtn, background: "#e8eaf6", color: "#7c3aed" }} onClick={onEditTitle}>✏️ تحرير</button>
+          </div>
+        </div>
+
+        {main.objectives?.content?.length > 0 && (
+          <div style={{ ...s.block, background: main.objectives?.style?.backgroundColor || s.block.background }}>
+            <div style={{ ...s.blockHeader, justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={s.blockHeaderIcon}>🎯</span>
+                <span style={s.blockHeaderTitle}>أهداف الدرس</span>
+              </div>
+              <button style={{ ...actionBtn, background: "#e8eaf6", color: "#7c3aed" }} onClick={onEditObjectives}>✏️ تعديل جماعي</button>
             </div>
             <ul style={s.objList}>
-              {lesson.objectives.map((o, i) => (
-                <li key={i} style={s.objItem}>
+              {main.objectives.content.map((objective, index) => (
+                <li key={index} style={{ ...s.objItem, color: main.objectives?.style?.textColor || "#444", fontSize: main.objectives?.style?.fontSize || "15px" }}>
                   <span style={s.objDot} />
-                  {o}
+                  {objective}
                 </li>
               ))}
             </ul>
           </div>
         )}
 
-        {lesson.sections?.map((sec, i) => (
-          <div key={i} style={s.sectionBlock}>
-            <div style={s.sectionHeadingWrap}>
-              <div style={s.sectionLine} />
-              <h3 style={s.sectionHeading}>{sec.heading}</h3>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+          <span style={{ fontWeight: 700, color: C.navy, fontSize: "14px" }}>شرح الدرس</span>
+          <button style={{ ...actionBtn, background: "#dcfce7", color: "#166534" }} onClick={onAddSection}>+ إضافة فقرة</button>
+        </div>
+
+        {main.content_sections?.map((section) => (
+          <div key={section.id} style={s.sectionBlock}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+              {section.type === "heading" ? (
+                <div style={s.sectionHeadingWrap}>
+                  <div style={s.sectionLine} />
+                  <h3 style={{ ...s.sectionHeading, fontSize: section.style?.fontSize || "16px", color: section.style?.textColor || C.navy }}>{section.content}</h3>
+                </div>
+              ) : (
+                <span style={{ fontSize: "12px", fontWeight: 700, color: "#64748b", background: "#f1f5f9", borderRadius: "8px", padding: "4px 8px" }}>{section.type}</span>
+              )}
+              <div style={{ display: "flex", gap: "6px" }}>
+                <button style={{ ...actionBtn, background: "#e8eaf6", color: "#7c3aed" }} onClick={() => onEditSection(section)}>✏️ تحرير</button>
+                <button style={{ ...actionBtn, background: "#fee2e2", color: "#dc2626" }} onClick={() => onDeleteSection(section.id)}>🗑️ حذف</button>
+              </div>
             </div>
-            <p style={s.sectionContent}>{sec.content}</p>
+            {section.type !== "heading" && (
+              <p style={{ ...s.sectionContent, color: section.style?.textColor || "#334155", fontSize: section.style?.fontSize || "15px", background: section.style?.backgroundColor || "#f8fafc" }}>
+                {section.content}
+              </p>
+            )}
           </div>
         ))}
 
         {/* ── بطاقات توضيحية ── */}
-        {imageCards?.length > 0 && (
+        {main.interactive_cards?.length > 0 && (
           <div style={s.block}>
             <div style={s.blockHeader}>
               <span style={s.blockHeaderIcon}>🖼️</span>
@@ -591,49 +827,32 @@ function LessonIntro({ lesson, summary, questionsCount, onStart, images, imageCa
               <span style={{ marginRight: "auto", fontSize: "11px", color: "#9ca3af", background: "#f3f4f6", borderRadius: "6px", padding: "2px 8px" }}>Claude AI</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-              {imageCards.map((card, i) => (
-                <VisualCard key={i} card={card} />
+              {main.interactive_cards.map((card) => (
+                <div key={card.id}>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: "6px", marginBottom: "8px" }}>
+                    <button style={{ ...actionBtn, background: "#e8eaf6", color: "#7c3aed" }} onClick={() => onEditCard(card)}>✏️ تحرير</button>
+                    <button style={{ ...actionBtn, background: "#fee2e2", color: "#dc2626" }} onClick={() => onDeleteCard(card.id)}>🗑️ حذف</button>
+                  </div>
+                  <VisualCard card={card} />
+                </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* ── صور SVG قديمة (fallback) ── */}
-        {!imageCards && images?.length > 0 && (
-          <div style={s.block}>
-            <div style={s.blockHeader}>
-              <span style={s.blockHeaderIcon}>🖼️</span>
-              <span style={s.blockHeaderTitle}>رسوم توضيحية</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-              {images.map((src, i) => {
-                if (typeof src !== "string" || !src.includes("<svg")) return null;
-                const responsive = src.replace(/<svg([^>]*)>/, (match, attrs) => {
-                  const cleaned = attrs.replace(/\s*width=["'][^"']*["']/g,"").replace(/\s*height=["'][^"']*["']/g,"");
-                  return `<svg${cleaned} width="100%" height="100%" style="display:block">`;
-                });
-                return (
-                  <div key={i} style={{ borderRadius: "14px", border: "1px solid #e8eaf6", background: "#fff", overflow: "hidden", aspectRatio: "7/4" }}
-                    dangerouslySetInnerHTML={{ __html: responsive }} />
-                );
-              })}
-            </div>
-          </div>
-        )}
-
         {/* ── فيديو تعليمي ── */}
-        {video && (
+        {main.video && (
           <div style={s.block}>
             <div style={s.blockHeader}>
               <span style={s.blockHeaderIcon}>🎬</span>
               <span style={s.blockHeaderTitle}>فيديو تعليمي مقترح</span>
             </div>
-            <a href={video.url} target="_blank" rel="noreferrer"
+            <a href={main.video.url} target="_blank" rel="noreferrer"
               style={{ display: "flex", alignItems: "center", gap: "14px", padding: "16px", background: "#fee2e2", borderRadius: "12px", textDecoration: "none", border: "1px solid #fca5a5" }}>
               <div style={{ width: "52px", height: "52px", background: "#dc2626", borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px", flexShrink: 0 }}>▶️</div>
               <div>
                 <div style={{ fontWeight: 700, fontSize: "14px", color: "#dc2626", marginBottom: "4px" }}>ابحث على YouTube</div>
-                <div style={{ fontSize: "13px", color: "#555" }}>{video.searchQuery}</div>
+                <div style={{ fontSize: "13px", color: "#555" }}>{main.video.searchQuery}</div>
               </div>
               <div style={{ marginRight: "auto", fontSize: "20px", color: "#dc2626" }}>←</div>
             </a>
@@ -641,19 +860,37 @@ function LessonIntro({ lesson, summary, questionsCount, onStart, images, imageCa
         )}
 
         {/* ── محاكاة تفاعلية ── */}
-        {simulation && <SimulationBlock simulation={simulation} />}
+        {main.simulation && <SimulationBlock simulation={main.simulation} />}
 
         {/* ── المحتوى المضاف من الشريط ── يُدرج مباشرة داخل الدرس */}
         {contentBlocks?.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <div style={{ flex: 1, height: "1px", background: "linear-gradient(90deg, #c4b5fd, transparent)" }} />
-              <span style={{ fontSize: "12px", fontWeight: 700, color: "#7c3aed", whiteSpace: "nowrap" }}>✨ محتوى إضافي مخصص</span>
+              <span style={{ fontSize: "12px", fontWeight: 700, color: "#7c3aed", whiteSpace: "nowrap" }}>✨ محتوى الدرس القابل للتعديل</span>
               <div style={{ flex: 1, height: "1px", background: "linear-gradient(90deg, transparent, #c4b5fd)" }} />
             </div>
-            {contentBlocks.map((block) => (
-              <ContentBlock key={block.id} block={block} />
-            ))}
+            {contentBlocks.map((block) => {
+              try {
+                return (
+                  <ContentBlock
+                    key={block?.id || Date.now()}
+                    block={block}
+                    onEdit={onEditBlock}
+                    onDelete={onDeleteBlock}
+                    isDragging={draggedBlock?.id === block?.id}
+                    dragHandlers={{
+                      onDragStart: () => onDragStart(block),
+                      onDragOver: onDragOver,
+                      onDrop: () => onDrop(block)
+                    }}
+                  />
+                );
+              } catch (error) {
+                console.error("[LessonPage] ContentBlock render error:", { block, error: error.message });
+                return <div style={{ padding: "16px", background: "#fff5f5", borderRadius: "8px", color: "#b91c1c", fontSize: "12px" }}>خطأ في عرض كتلة المحتوى: {error.message}</div>;
+              }
+            })}
           </div>
         )}
       </div>
@@ -667,32 +904,36 @@ function LessonIntro({ lesson, summary, questionsCount, onStart, images, imageCa
           <button style={{ ...s.startBtn, width: "100%", marginTop: "16px" }} onClick={onStart}>ابدأ الاختبار 🚀</button>
         </div>
 
-        {/* Summary */}
         <div style={s.summaryBlock}>
-          <div style={s.blockHeader}>
-            <span style={s.blockHeaderIcon}>📋</span>
-            <span style={s.blockHeaderTitle}>الملخص</span>
+          <div style={{ ...s.blockHeader, justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={s.blockHeaderIcon}>📋</span>
+              <span style={s.blockHeaderTitle}>الملخص</span>
+            </div>
+            <button style={{ ...actionBtn, background: "#e8eaf6", color: "#7c3aed" }} onClick={onEditSummary}>✏️ تحرير</button>
           </div>
-          <p style={s.summaryText}>{summary}</p>
+          <p style={{ ...s.summaryText, color: sidebar.summary?.style?.textColor || "#333", fontSize: sidebar.summary?.style?.fontSize || "14px", background: sidebar.summary?.style?.backgroundColor || "transparent", borderRadius: "10px", padding: "10px 12px" }}>
+            {sidebar.summary?.content}
+          </p>
         </div>
 
-        {/* Key Terms */}
-        {lesson.keyTerms?.length > 0 && (
-          <div style={s.block}>
-            <div style={s.blockHeader}>
+        <div style={s.block}>
+          <div style={{ ...s.blockHeader, justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <span style={s.blockHeaderIcon}>📚</span>
               <span style={s.blockHeaderTitle}>المصطلحات</span>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {lesson.keyTerms.map((t, i) => (
-                <div key={i} style={s.termCard}>
-                  <span style={s.termWord}>{t.term}</span>
-                  <span style={s.termDef}>{t.definition}</span>
-                </div>
-              ))}
-            </div>
+            <button style={{ ...actionBtn, background: "#e8eaf6", color: "#7c3aed" }} onClick={onEditGlossary}>✏️ تحرير</button>
           </div>
-        )}
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {sidebar.glossary?.items?.map((item) => (
+              <div key={item.id} style={{ ...s.termCard, background: sidebar.glossary?.style?.backgroundColor && sidebar.glossary.style.backgroundColor !== "transparent" ? sidebar.glossary.style.backgroundColor : s.termCard.background }}>
+                <span style={{ ...s.termWord, color: sidebar.glossary?.style?.textColor || C.purple, fontSize: sidebar.glossary?.style?.fontSize || "14px" }}>{item.term}</span>
+                <span style={{ ...s.termDef, color: sidebar.glossary?.style?.textColor ? sidebar.glossary.style.textColor + "cc" : "#555", fontSize: sidebar.glossary?.style?.fontSize ? `calc(${sidebar.glossary.style.fontSize} - 1px)` : "13px" }}>{item.definition}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -788,9 +1029,17 @@ export default function LessonPage({ lessonData, onClose }) {
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState([]);
   const [streak, setStreak] = useState(0);
+  const [structuredLesson, setStructuredLesson] = useState(() => buildStructuredLessonData(lesson, summary, imageCards, video, simulation));
   const [contentBlocks, setContentBlocks] = useState([]);
   const [showToolbar, setShowToolbar] = useState(true);
+  const [editingBlock, setEditingBlock] = useState(null);
+  const [draggedBlock, setDraggedBlock] = useState(null);
   const { speaking, loading, toggle, selectedVoice, setSelectedVoice } = useAudioReader(lesson, summary);
+
+  useEffect(() => {
+    setStructuredLesson(buildStructuredLessonData(lesson, summary, imageCards, video, simulation));
+    setContentBlocks([]);
+  }, [lesson, summary, imageCards, video, simulation]);
 
   const handleAnswer = (correct) => {
     const next = [...answers, correct];
@@ -805,11 +1054,220 @@ export default function LessonPage({ lessonData, onClose }) {
   };
 
   const handleContentAdd = (block) => {
-    setContentBlocks([...contentBlocks, { ...block, id: Date.now() }]);
+    try {
+      if (!block) {
+        console.warn("[LessonPage] Attempted to add null block");
+        return;
+      }
+      const newBlock = { ...block, id: block.id || Date.now() };
+      setContentBlocks([...contentBlocks, newBlock]);
+      console.log("[LessonPage] Block added successfully:", newBlock.type);
+    } catch (error) {
+      console.error("[LessonPage] Error adding content block:", error.message);
+    }
   };
 
   const handleContentReorder = (reorderedBlocks) => {
     setContentBlocks(reorderedBlocks);
+  };
+
+  const handleEditBlock = (block) => {
+    setEditingBlock(block);
+  };
+
+  const handleEditTitle = () => {
+    setEditingBlock({ ...structuredLesson.main.title, type: "heading", editTarget: "main.title" });
+  };
+
+  const handleEditObjectives = () => {
+    setEditingBlock({
+      ...structuredLesson.main.objectives,
+      type: "objectives_group",
+      editTarget: "main.objectives",
+      contentText: structuredLesson.main.objectives.content.join("\n"),
+    });
+  };
+
+  const handleEditSummary = () => {
+    setEditingBlock({ ...structuredLesson.sidebar.summary, type: "text", editTarget: "sidebar.summary" });
+  };
+
+  const handleEditGlossary = () => {
+    const glossary = structuredLesson?.sidebar?.glossary;
+    const items = Array.isArray(glossary?.items) ? glossary.items : [];
+    const lines = items.map((item) => `${item.term || ""}: ${item.definition || ""}`).join("\n");
+    setEditingBlock({ ...glossary, type: "glossary_group", editTarget: "sidebar.glossary", contentText: lines });
+  };
+
+  const handleAddSection = () => {
+    setStructuredLesson((prev) => {
+      const next = [...prev.main.content_sections, {
+        id: Date.now(),
+        type: "paragraph",
+        content: "فقرة جديدة قابلة للتعديل...",
+        editable: true,
+        order: prev.main.content_sections.length + 1,
+        style: { textColor: "#334155", backgroundColor: "#f8fafc", fontSize: "15px" },
+      }];
+      return { ...prev, main: { ...prev.main, content_sections: next } };
+    });
+  };
+
+  const handleEditSection = (section) => {
+    setEditingBlock({ ...section, type: section.type === "heading" ? "heading" : "text", editTarget: "main.content_sections", originalType: section.type });
+  };
+
+  const handleDeleteSection = (sectionId) => {
+    setStructuredLesson((prev) => {
+      const next = prev.main.content_sections
+        .filter((item) => item.id !== sectionId)
+        .map((item, index) => ({ ...item, order: index + 1 }));
+      return { ...prev, main: { ...prev.main, content_sections: next } };
+    });
+  };
+
+  const handleEditCard = (card) => {
+    setEditingBlock({ ...card, type: "interactive_card", editTarget: "main.interactive_cards" });
+  };
+
+  const handleDeleteCard = (cardId) => {
+    setStructuredLesson((prev) => ({
+      ...prev,
+      main: {
+        ...prev.main,
+        interactive_cards: prev.main.interactive_cards.filter((card) => card.id !== cardId),
+      },
+    }));
+  };
+
+  const handleSaveBlock = (updatedBlock) => {
+    const normalizedStyle = {
+      ...(updatedBlock.style || {}),
+      ...(updatedBlock.style?.contentBg ? { backgroundColor: updatedBlock.style.contentBg } : {}),
+    };
+
+    if (updatedBlock.editTarget === "main.title") {
+      setStructuredLesson((prev) => ({
+        ...prev,
+        main: {
+          ...prev.main,
+          title: {
+            ...prev.main.title,
+            content: updatedBlock.content,
+            style: { ...prev.main.title.style, ...normalizedStyle },
+          },
+        },
+      }));
+    } else if (updatedBlock.editTarget === "main.objectives") {
+      const nextObjectives = String(updatedBlock.contentText || "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      setStructuredLesson((prev) => ({
+        ...prev,
+        main: {
+          ...prev.main,
+          objectives: {
+            ...prev.main.objectives,
+            content: nextObjectives,
+            style: { ...prev.main.objectives.style, ...normalizedStyle },
+          },
+        },
+      }));
+    } else if (updatedBlock.editTarget === "main.content_sections") {
+      setStructuredLesson((prev) => ({
+        ...prev,
+        main: {
+          ...prev.main,
+          content_sections: prev.main.content_sections.map((item) => (
+            item.id === updatedBlock.id
+              ? {
+                  ...item,
+                  content: updatedBlock.content,
+                  type: updatedBlock.originalType || item.type,
+                  style: { ...item.style, ...normalizedStyle },
+                }
+              : item
+          )),
+        },
+      }));
+    } else if (updatedBlock.editTarget === "sidebar.summary") {
+      setStructuredLesson((prev) => ({
+        ...prev,
+        sidebar: {
+          ...prev.sidebar,
+          summary: {
+            ...prev.sidebar.summary,
+            content: updatedBlock.content,
+            style: { ...prev.sidebar.summary.style, ...normalizedStyle },
+          },
+        },
+      }));
+    } else if (updatedBlock.editTarget === "sidebar.glossary") {
+      const items = String(updatedBlock.contentText || "")
+        .split("\n")
+        .map((line, idx) => {
+          const raw = line.trim();
+          if (!raw) return null;
+          const splitByColon = raw.includes(":") ? raw.split(":") : raw.split("-");
+          const term = (splitByColon[0] || "").trim();
+          const definition = splitByColon.slice(1).join(":").trim();
+          if (!term && !definition) return null;
+          return { id: Date.now() + idx, term, definition };
+        })
+        .filter(Boolean);
+      setStructuredLesson((prev) => ({
+        ...prev,
+        sidebar: {
+          ...prev.sidebar,
+          glossary: {
+            ...prev.sidebar.glossary,
+            items,
+            style: { ...prev.sidebar.glossary.style, ...normalizedStyle },
+          },
+        },
+      }));
+    } else if (updatedBlock.editTarget === "main.interactive_cards") {
+      setStructuredLesson((prev) => ({
+        ...prev,
+        main: {
+          ...prev.main,
+          interactive_cards: prev.main.interactive_cards.map((card) => (
+            card.id === updatedBlock.id
+              ? { ...card, title: updatedBlock.title, description: updatedBlock.description }
+              : card
+          )),
+        },
+      }));
+    } else {
+      setContentBlocks(contentBlocks.map(b => b.id === updatedBlock.id ? updatedBlock : b));
+    }
+    setEditingBlock(null);
+  };
+
+  const handleDeleteBlock = (blockId) => {
+    setContentBlocks(contentBlocks.filter(b => b.id !== blockId));
+  };
+
+  const handleDragStart = (block) => {
+    setDraggedBlock(block);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (targetBlock) => {
+    if (!draggedBlock || draggedBlock.id === targetBlock.id) {
+      setDraggedBlock(null);
+      return;
+    }
+    const draggedIdx = contentBlocks.findIndex(b => b.id === draggedBlock.id);
+    const targetIdx = contentBlocks.findIndex(b => b.id === targetBlock.id);
+    const newBlocks = [...contentBlocks];
+    [newBlocks[draggedIdx], newBlocks[targetIdx]] = [newBlocks[targetIdx], newBlocks[draggedIdx]];
+    setContentBlocks(newBlocks);
+    setDraggedBlock(null);
   };
 
   return (
@@ -912,7 +1370,30 @@ export default function LessonPage({ lessonData, onClose }) {
       {/* Content */}
       <div style={s.content}>
         {phase === "intro" && (
-          <LessonIntro key={JSON.stringify({hasImages: !!images, hasCards: !!imageCards, hasSim: !!simulation})} lesson={lesson} summary={summary} questionsCount={questions.length} onStart={() => { setPhase("quiz"); }} images={images} imageCards={imageCards} video={video} simulation={simulation} contentBlocks={contentBlocks} />
+          <LessonIntro
+            key={JSON.stringify({ hasCards: !!structuredLesson.main.interactive_cards?.length, hasSim: !!structuredLesson.main.simulation })}
+            structuredLesson={structuredLesson}
+            questionsCount={questions.length}
+            onStart={() => { setPhase("quiz"); }}
+            contentBlocks={contentBlocks}
+            onContentAdd={handleContentAdd}
+            onContentReorder={handleContentReorder}
+            onEditBlock={handleEditBlock}
+            onDeleteBlock={handleDeleteBlock}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            draggedBlock={draggedBlock}
+            onEditTitle={handleEditTitle}
+            onEditObjectives={handleEditObjectives}
+            onEditSection={handleEditSection}
+            onDeleteSection={handleDeleteSection}
+            onAddSection={handleAddSection}
+            onEditCard={handleEditCard}
+            onDeleteCard={handleDeleteCard}
+            onEditSummary={handleEditSummary}
+            onEditGlossary={handleEditGlossary}
+          />
         )}
         {phase === "map" && (
           <div style={{ maxWidth: "900px", margin: "0 auto", animation: "fadeSlide 0.4s ease" }}>
@@ -953,6 +1434,17 @@ export default function LessonPage({ lessonData, onClose }) {
         )}
       </div>
 
+      {phase === "intro" && (
+        <button
+          onClick={() => setShowToolbar((prev) => !prev)}
+          style={showToolbar ? s.fabOpen : s.fab}
+          title={showToolbar ? "إخفاء أدوات النص" : "إظهار أدوات النص"}
+          aria-label={showToolbar ? "إخفاء أدوات النص" : "إظهار أدوات النص"}
+        >
+          {showToolbar ? "✕" : "+"}
+        </button>
+      )}
+
       {/* Editor Toolbar - Show only in lesson phase */}
       {showToolbar && phase === "intro" && (
         <ContextualEditorToolbar
@@ -968,6 +1460,188 @@ export default function LessonPage({ lessonData, onClose }) {
           blocks={contentBlocks}
         />
       )}
+
+      {/* Edit Block Modal */}
+      {editingBlock && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.48)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000, direction: "rtl", padding: "20px" }}>
+          <div style={{ background: "#fff", borderRadius: "16px", maxWidth: "600px", width: "100%", maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+            <EditBlockModal block={editingBlock} onSave={handleSaveBlock} onClose={() => setEditingBlock(null)} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Edit Block Modal ────────────────────────────────────────────────────────
+function EditBlockModal({ block, onSave, onClose }) {
+  const [localBlock, setLocalBlock] = useState(block);
+
+  const updateStyle = (key, value) => {
+    setLocalBlock({ ...localBlock, style: { ...localBlock.style, [key]: value } });
+  };
+
+  const updateContent = (value) => {
+    setLocalBlock({ ...localBlock, content: value });
+  };
+
+  const updateContentText = (value) => {
+    setLocalBlock({ ...localBlock, contentText: value });
+  };
+
+  const updateField = (key, value) => {
+    setLocalBlock({ ...localBlock, [key]: value });
+  };
+
+  const isTextLike = localBlock.type === "text" || localBlock.type === "heading";
+  const isObjectivesGroup = localBlock.type === "objectives_group";
+  const isGlossaryGroup = localBlock.type === "glossary_group";
+  const isInteractiveCard = localBlock.type === "interactive_card";
+
+  return (
+    <div style={{ padding: "24px" }}>
+      <h2 style={{ margin: "0 0 20px", fontSize: "18px", fontWeight: 700, color: "#1a237e" }}>
+        تحرير {isObjectivesGroup ? "أهداف الدرس" : isGlossaryGroup ? "المصطلحات" : isInteractiveCard ? "البطاقة" : localBlock.type === "heading" ? "العنوان" : "النص"}
+      </h2>
+
+      {/* Content */}
+      {isTextLike && (
+        <div style={{ marginBottom: "16px" }}>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>المحتوى</label>
+          <textarea
+            value={localBlock.content}
+            onChange={(e) => updateContent(e.target.value)}
+            style={{ width: "100%", minHeight: "80px", padding: "10px", borderRadius: "8px", border: "1px solid #e2e8f0", fontFamily: "inherit", fontSize: "14px", resize: "vertical" }}
+          />
+        </div>
+      )}
+
+      {isObjectivesGroup && (
+        <div style={{ marginBottom: "16px" }}>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>الأهداف (كل هدف في سطر)</label>
+          <textarea
+            value={localBlock.contentText || ""}
+            onChange={(e) => updateContentText(e.target.value)}
+            style={{ width: "100%", minHeight: "140px", padding: "10px", borderRadius: "8px", border: "1px solid #e2e8f0", fontFamily: "inherit", fontSize: "14px", resize: "vertical" }}
+          />
+        </div>
+      )}
+
+      {isGlossaryGroup && (
+        <div style={{ marginBottom: "16px" }}>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>المصطلحات — كل سطر بصيغة: <span style={{ color: "#7c3aed", fontFamily: "monospace" }}>المصطلح: التعريف</span></label>
+          <textarea
+            value={localBlock.contentText || ""}
+            onChange={(e) => updateContentText(e.target.value)}
+            placeholder="مثال:\nالخوارزمية: مجموعة من الخطوات المنظمة لحل مشكلة\nالبرمجة: فن كتابة التعليمات للحاسوب"
+            style={{ width: "100%", minHeight: "180px", padding: "10px", borderRadius: "8px", border: "1px solid #e2e8f0", fontFamily: "inherit", fontSize: "14px", resize: "vertical", lineHeight: "1.8", direction: "rtl" }}
+          />
+          <p style={{ fontSize: "11px", color: "#94a3b8", marginTop: "6px" }}>أضف كل مصطلح وتعريفه في سطر منفصل — استخدم النقطتان (:) للفصل</p>
+        </div>
+      )}
+
+      {isInteractiveCard && (
+        <>
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>عنوان البطاقة</label>
+            <input
+              value={localBlock.title || ""}
+              onChange={(e) => updateField("title", e.target.value)}
+              style={{ width: "100%", padding: "10px", borderRadius: "8px", border: "1px solid #e2e8f0", fontFamily: "inherit", fontSize: "14px" }}
+            />
+          </div>
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>وصف البطاقة</label>
+            <textarea
+              value={localBlock.description || ""}
+              onChange={(e) => updateField("description", e.target.value)}
+              style={{ width: "100%", minHeight: "110px", padding: "10px", borderRadius: "8px", border: "1px solid #e2e8f0", fontFamily: "inherit", fontSize: "14px", resize: "vertical" }}
+            />
+          </div>
+        </>
+      )}
+
+      {/* Text Color */}
+      {(isTextLike || isObjectivesGroup || isGlossaryGroup) && (
+        <div style={{ marginBottom: "16px" }}>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>لون النص</label>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            {["#374151", "#1a237e", "#7c3aed", "#059669", "#dc2626", "#d97706"].map(color => (
+              <button
+                key={color}
+                onClick={() => updateStyle("textColor", color)}
+                style={{ width: "40px", height: "40px", borderRadius: "8px", border: localBlock.style?.textColor === color ? "3px solid #7c3aed" : "1px solid #e2e8f0", background: color, cursor: "pointer", transition: "all 0.2s" }}
+                title={color}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Background Color */}
+      {(isTextLike || isObjectivesGroup || isGlossaryGroup) && (
+        <div style={{ marginBottom: "16px" }}>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>لون الخلفية</label>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            {["transparent", "#ede9fe", "#f3f4f6", "#dbeafe", "#dcfce7", "#fef3c7"].map(color => (
+              <button
+                key={color}
+                onClick={() => updateStyle("contentBg", color)}
+                style={{ width: "40px", height: "40px", borderRadius: "8px", border: localBlock.style?.contentBg === color ? "3px solid #7c3aed" : "1px solid #e2e8f0", background: color, cursor: "pointer", transition: "all 0.2s" }}
+                title={color || "شفاف"}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Font Size */}
+      {(isTextLike || isObjectivesGroup || isGlossaryGroup) && (
+        <div style={{ marginBottom: "16px" }}>
+          <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>حجم الخط</label>
+          <div style={{ display: "flex", gap: "8px" }}>
+            {["12px", "14px", "16px", "18px", "20px", "24px"].map(size => (
+              <button
+                key={size}
+                onClick={() => updateStyle("fontSize", size)}
+                style={{ padding: "8px 12px", borderRadius: "6px", border: localBlock.style?.fontSize === size ? "2px solid #7c3aed" : "1px solid #e2e8f0", background: "#fff", cursor: "pointer", fontSize: size, fontWeight: 600, color: "#1a237e", transition: "all 0.2s" }}
+              >
+                {size}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Block Background */}
+      {!isInteractiveCard && <div style={{ marginBottom: "20px" }}>
+        <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>خلفية العنصر</label>
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          {["#fff", "#ede9fe", "#f3f4f6", "#dbeafe", "#dcfce7", "#fef3c7"].map(color => (
+            <button
+              key={color}
+              onClick={() => updateStyle("backgroundColor", color)}
+              style={{ width: "40px", height: "40px", borderRadius: "8px", border: localBlock.style?.backgroundColor === color ? "3px solid #7c3aed" : "1px solid #e2e8f0", background: color, cursor: "pointer", transition: "all 0.2s" }}
+            />
+          ))}
+        </div>
+      </div>}
+
+      {/* Actions */}
+      <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+        <button
+          onClick={onClose}
+          style={{ padding: "10px 16px", borderRadius: "8px", border: "1px solid #e2e8f0", background: "#fff", color: "#475569", cursor: "pointer", fontSize: "14px", fontWeight: 600, transition: "all 0.2s" }}
+        >
+          إلغاء
+        </button>
+        <button
+          onClick={() => onSave(localBlock)}
+          style={{ padding: "10px 16px", borderRadius: "8px", border: "none", background: "#7c3aed", color: "#fff", cursor: "pointer", fontSize: "14px", fontWeight: 600, transition: "all 0.2s" }}
+        >
+          حفظ التغييرات
+        </button>
+      </div>
     </div>
   );
 }
@@ -992,6 +1666,37 @@ const s = {
   phaseTabActive: { color: C.purple, borderBottom: `3px solid ${C.purple}`, fontWeight: 700 },
 
   content: { flex: 1, overflowY: "auto", padding: "28px 32px" },
+  fab: {
+    position: "fixed",
+    bottom: "22px",
+    left: "22px",
+    width: "54px",
+    height: "54px",
+    borderRadius: "50%",
+    border: "none",
+    background: "linear-gradient(135deg,#1a237e,#7c3aed)",
+    color: "#fff",
+    fontSize: "32px",
+    lineHeight: 1,
+    cursor: "pointer",
+    boxShadow: "0 14px 26px rgba(124,58,237,0.32)",
+    zIndex: 10002,
+  },
+  fabOpen: {
+    position: "fixed",
+    bottom: "22px",
+    left: "22px",
+    width: "54px",
+    height: "54px",
+    borderRadius: "50%",
+    border: "none",
+    background: "linear-gradient(135deg,#dc2626,#ef4444)",
+    color: "#fff",
+    fontSize: "24px",
+    cursor: "pointer",
+    boxShadow: "0 14px 26px rgba(220,38,38,0.32)",
+    zIndex: 10002,
+  },
 
   heroStrip: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: "10px", background: "linear-gradient(135deg,#1e1b4b,#4338ca)", borderRadius: "14px", padding: "14px", boxShadow: "0 8px 20px rgba(30,27,75,0.22)" },
   heroStat: { background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "12px", padding: "10px", textAlign: "center", display: "flex", flexDirection: "column", gap: "4px" },

@@ -40,7 +40,8 @@ const DEFAULT_ANTHROPIC_MODEL_FALLBACKS = [
 ];
 
 // --- Anthropic client (direct API) ---
-const useAnthropicDirect = String(process.env.USE_ANTHROPIC_DIRECT || "true").toLowerCase() === "true";
+// Default is false so beginner setup works smoothly with Bedrock-only credentials.
+const useAnthropicDirect = String(process.env.USE_ANTHROPIC_DIRECT || "false").toLowerCase() === "true";
 const anthropic = useAnthropicDirect && process.env.ANTHROPIC_API_KEY 
   ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   : null;
@@ -49,22 +50,26 @@ if (useAnthropicDirect && !anthropic) {
   console.warn("Warning: USE_ANTHROPIC_DIRECT is true but ANTHROPIC_API_KEY is not set. Will fall back to Bedrock.");
 }
 
-const DEFAULT_BEDROCK_MODEL_ID = "anthropic.claude-3-5-haiku-20241022-v1:0";
+const DEFAULT_BEDROCK_MODEL_ID = "amazon.nova-lite-v1:0";
 const DEFAULT_BEDROCK_MODEL_FALLBACKS = [
-  "us.anthropic.claude-3-5-haiku-20241022-v1:0",
-  "anthropic.claude-3-haiku-20240307-v1:0",
+  "us.amazon.nova-lite-v1:0",
+  "amazon.nova-pro-v1:0",
+  "us.amazon.nova-pro-v1:0",
+  "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+  "anthropic.claude-3-5-sonnet-20241022-v2:0",
   "us.anthropic.claude-3-haiku-20240307-v1:0",
-  "amazon.nova-lite-v1:0",
+  "anthropic.claude-3-haiku-20240307-v1:0",
 ];
 
 const hasStaticAwsKeys = Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
 const awsClientConfig = {
-  region: process.env.AWS_REGION,
+  region: process.env.AWS_REGION || "us-east-1",
   ...(hasStaticAwsKeys
     ? {
         credentials: {
           accessKeyId: process.env.AWS_ACCESS_KEY_ID,
           secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+          ...(process.env.AWS_SESSION_TOKEN ? { sessionToken: process.env.AWS_SESSION_TOKEN } : {}),
         },
       }
     : {}),
@@ -75,8 +80,8 @@ const s3 = new S3Client(awsClientConfig);
 
 const BUCKET = process.env.S3_BUCKET_NAME;
 
-if (!process.env.AWS_REGION || !BUCKET) {
-  console.warn("Warning: AWS configuration is incomplete. Set AWS_REGION and S3_BUCKET_NAME.");
+if (!BUCKET) {
+  console.warn("Warning: S3_BUCKET_NAME is not set. Generated images/files will use local storage fallback.");
 }
 
 // --- AWS Translate client ---
@@ -144,6 +149,59 @@ async function listLocalFiles() {
   }
   out.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
   return out;
+}
+
+async function persistGeneratedPng(base64Png, nameHint = "generated-image") {
+  const safeHint = path.basename(String(nameHint || "generated-image")).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const fileName = `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safeHint}.png`;
+  const imageBuffer = Buffer.from(String(base64Png || ""), "base64");
+
+  if (!imageBuffer.length) {
+    throw new Error("Generated image is empty");
+  }
+
+  if (BUCKET) {
+    const key = `generated-images/${fileName}`;
+    try {
+      await s3.send(new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: key,
+        Body: imageBuffer,
+        ContentType: "image/png",
+      }));
+
+      const signedUrl = await getSignedUrl(
+        s3,
+        new GetObjectCommand({ Bucket: BUCKET, Key: key }),
+        { expiresIn: 86400 }
+      );
+
+      return { url: signedUrl, key, storage: "s3" };
+    } catch (s3Err) {
+      if (!isAwsAuthOrConfigError(s3Err)) throw s3Err;
+      console.warn("[persistGeneratedPng] s3 unavailable, fallback to local:", s3Err.message);
+    }
+  }
+
+  const localName = fileName;
+  const localPath = path.join(LOCAL_UPLOADS_DIR, localName);
+  await fs.promises.writeFile(localPath, imageBuffer);
+  return {
+    url: makeLocalFileUrl(localName),
+    key: makeLocalFileKey(localName),
+    storage: "local",
+  };
+}
+
+function validateGeneratedSvg(svg) {
+  const text = String(svg || "");
+  if (!text.includes("<svg")) return false;
+  if (!/viewBox="0 0 \d+ \d+"/i.test(text)) return false;
+  const rectCount = (text.match(/<rect\b/gi) || []).length;
+  const foreignObjectCount = (text.match(/<foreignObject\b/gi) || []).length;
+  // Accept either: old-style (many rects + text elements) or new foreignObject style
+  if (foreignObjectCount >= 4) return true; // new foreignObject infographic
+  return rectCount >= 5; // old-style fallback
 }
 
 app.get("/", (req, res) => {
@@ -291,8 +349,15 @@ function normalizeBedrockError(err, prefix) {
     name.includes("accessdenied") || 
     name.includes("unauthorized") ||
     name.includes("invaliduseridexception") ||
+    name.includes("invalidclienttokenid") ||
+    name.includes("invalidsignatureexception") ||
+    name.includes("tokenrefresherror") ||
     messageLower.includes("not authorized") ||
-    messageLower.includes("access denied");
+    messageLower.includes("access denied") ||
+    messageLower.includes("security token") ||
+    messageLower.includes("invalid token") ||
+    messageLower.includes("token is invalid") ||
+    messageLower.includes("token has expired");
 
   if (isAuthError) {
     return {
@@ -370,6 +435,14 @@ function toModelVariants(modelId) {
   return [id];
 }
 
+function isBlockedLegacyModel(modelId) {
+  const id = String(modelId || "").toLowerCase();
+  return (
+    id.includes("claude-3-5-haiku-20241022") ||
+    id.includes("claude-3-haiku-20240307")
+  );
+}
+
 function buildModelCandidates(primary, fallbackCsv) {
   const fromEnv = String(fallbackCsv || "")
     .split(",")
@@ -381,7 +454,9 @@ function buildModelCandidates(primary, fallbackCsv) {
   const seen = new Set();
 
   for (const rawId of rawCandidates) {
+    if (isBlockedLegacyModel(rawId)) continue;
     for (const variant of toModelVariants(rawId)) {
+      if (isBlockedLegacyModel(variant)) continue;
       if (seen.has(variant)) continue;
       seen.add(variant);
       deduped.push(variant);
@@ -392,8 +467,35 @@ function buildModelCandidates(primary, fallbackCsv) {
 }
 
 function getConfiguredModelCandidates() {
-  const primary = process.env.BEDROCK_MODEL_ID || DEFAULT_BEDROCK_MODEL_ID;
+  const configured = String(process.env.BEDROCK_MODEL_ID || "").trim();
+  const primary = configured && !isBlockedLegacyModel(configured)
+    ? configured
+    : DEFAULT_BEDROCK_MODEL_ID;
   return buildModelCandidates(primary, process.env.BEDROCK_FALLBACK_MODEL_IDS);
+}
+
+function getConfiguredImageModelCandidates() {
+  const fromEnv = String(process.env.BEDROCK_IMAGE_MODEL_IDS || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+
+  // Defaults can be overridden from .env to match account-approved models.
+  const defaults = [
+    "amazon.titan-image-generator-v2:0",
+    "amazon.nova-canvas-v1:0",
+    "amazon.titan-image-generator-v1",
+  ];
+
+  const candidates = fromEnv.length ? fromEnv : defaults;
+  const deduped = [];
+  const seen = new Set();
+  for (const id of candidates) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    deduped.push(id);
+  }
+  return deduped;
 }
 
 function getConfiguredAnthropicModelCandidates() {
@@ -469,6 +571,42 @@ async function invokeClaudeDirectly(prompt, maxTokens, prefix, modelId = ANTHROP
   }
 }
 
+// ── Amazon Titan Image Generator / Nova Canvas ────────────────────────────────
+async function generateImageWithBedrock(prompt, negativeText = "blurry, bad quality, text overlay, watermark, distorted, ugly") {
+  const IMAGE_MODELS = getConfiguredImageModelCandidates();
+  for (const modelId of IMAGE_MODELS) {
+    try {
+      console.log(`[BedrockImage] Trying ${modelId}...`);
+      const body = {
+        taskType: "TEXT_IMAGE",
+        textToImageParams: { text: prompt.slice(0, 512), negativeText },
+        imageGenerationConfig: {
+          numberOfImages: 1,
+          quality: "standard",
+          width: 1024,
+          height: 1024,
+          cfgScale: 7.5,
+          seed: Math.floor(Math.random() * 2147483646),
+        },
+      };
+      const response = await bedrock.send(new InvokeModelCommand({
+        modelId,
+        contentType: "application/json",
+        accept: "application/json",
+        body: JSON.stringify(body),
+      }));
+      const result = JSON.parse(Buffer.from(response.body).toString("utf-8"));
+      const base64 = result.images?.[0];
+      if (!base64) throw new Error("No image data in response");
+      console.log(`[BedrockImage] Success with ${modelId}`);
+      return { dataUrl: `data:image/png;base64,${base64}`, modelId };
+    } catch (err) {
+      console.warn(`[BedrockImage] ${modelId} failed:`, err.message);
+    }
+  }
+  throw new Error("All Bedrock image generation models failed");
+}
+
 async function invokeClaudeWithFallback(prompt, maxTokens, prefix) {
   // Try Anthropic Direct API first if configured
   if (anthropic && useAnthropicDirect) {
@@ -533,7 +671,8 @@ async function invokeClaudeWithFallback(prompt, maxTokens, prefix) {
         const canTryAnotherModel =
           normalized.code === "DAILY_TOKEN_LIMIT" ||
           normalized.code === "THROTTLED" ||
-          normalized.code === "INFERENCE_PROFILE_REQUIRED";
+          normalized.code === "INFERENCE_PROFILE_REQUIRED" ||
+          normalized.code === "AUTH_ERROR";
 
         if (canTryAnotherModel) break;
         throw err;
@@ -1526,9 +1665,92 @@ ${contextDocument}
       }
     }
 
+    if (kind === "quiz") {
+      const questionCount = Math.min(15, Math.max(3, parseInt(req.body.questionCount) || 5));
+      const level = req.body.level || "medium";
+      const levelLabel = level === "easy" ? "سهلة" : level === "hard" ? "متقدمة ومعمّقة" : "متوسطة الصعوبة";
+      const quizPrompt = `أنت مصمم اختبارات تعليمية متخصص. أنشئ ${questionCount} سؤال اختيار من متعدد ${levelLabel} باللغة العربية، مرتبطة مباشرة بالدرس التالي:
+
+${contextDocument.slice(0, 800)}
+
+شروط مهمة:
+- كل سؤال يجب أن يكون مرتبطاً ارتباطاً مباشراً بمحتوى الدرس أعلاه
+- 4 خيارات لكل سؤال (أ، ب، ج، د)
+- تضمين الإجابة الصحيحة وشرح موجز لها
+- لا تكرار بين الأسئلة
+
+أعد JSON فقط بهذا الهيكل الدقيق:
+{
+  "questions": [
+    {
+      "question": "نص السؤال؟",
+      "options": ["أ) الخيار الأول", "ب) الخيار الثاني", "ج) الخيار الثالث", "د) الخيار الرابع"],
+      "answer": "أ) الخيار الأول",
+      "explanation": "شرح مختصر لسبب صحة هذه الإجابة"
+    }
+  ]
+}`;
+
+      try {
+        const invokeResult = await invokeClaudeWithFallback(quizPrompt, 3000, "Quiz generation");
+        const jsonMatch = String(invokeResult.text || "").match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("Model did not return valid JSON");
+        const parsed = JSON.parse(jsonMatch[0]);
+        const questions = parsed.questions || [];
+        if (!questions.length) throw new Error("No questions generated");
+        return res.json({ questions: questions.slice(0, questionCount) });
+      } catch (quizErr) {
+        console.error("[generate-contextual-content:quiz] Error:", quizErr.message);
+        // Fallback: generate basic questions from key terms
+        const terms = (lessonContext.keyTerms || []).slice(0, questionCount);
+        const fallbackQuestions = terms.map((term, i) => ({
+          question: `ما هو تعريف "${term.term || term}"؟`,
+          options: [`أ) ${term.definition || "التعريف الصحيح"}`, "ب) وصف غير دقيق", "ج) مفهوم مختلف", "د) لا علاقة له بالدرس"],
+          answer: `أ) ${term.definition || "التعريف الصحيح"}`,
+          explanation: `${term.term || term} هو من المصطلحات الأساسية في هذا الدرس.`,
+        }));
+        if (fallbackQuestions.length === 0) {
+          return res.status(500).json({ error: "تعذر توليد الاختبار، يرجى المحاولة مرة أخرى" });
+        }
+        return res.json({ questions: fallbackQuestions });
+      }
+    }
+
     if (kind === "image") {
+      const imgCategory = req.body.category || "photo";
+      // For AI image generation, try Amazon Titan / Nova Canvas first
+      if (source === "ai") {
+        try {
+          // Build English prompt for Titan (it works better with English)
+          const topic = String(instruction || lessonContext.title || "educational topic").trim();
+          const styleHint = imgCategory === "illustration"
+            ? "clean vector illustration, flat design, colorful, educational"
+            : imgCategory === "diagram"
+            ? "labeled educational diagram, white background, clear labels, academic"
+            : "realistic educational photograph, high quality, professional";
+          const titanPrompt = `${topic}, ${styleHint}, high quality, no text overlay`;
+          const titanResult = await generateImageWithBedrock(titanPrompt);
+          const base64Png = String(titanResult.dataUrl || "").replace(/^data:image\/png;base64,/, "");
+          const persisted = await persistGeneratedPng(base64Png, topic.slice(0, 32) || "generated");
+          return res.json({
+            items: [{
+              id: `bedrock-img-${Date.now()}`,
+              title: String(instruction || lessonContext.title || "صورة مولَّدة").trim(),
+              caption: `مولَّد بـ Amazon Bedrock (${titanResult.modelId})`,
+              url: persisted.url,
+              fileKey: persisted.key,
+              storage: persisted.storage,
+              source: "ai-bedrock",
+              category: imgCategory,
+              previewType: "image",
+            }],
+          });
+        } catch (titanErr) {
+          console.warn("[BedrockImage] failed, falling back to Pollinations:", titanErr.message);
+        }
+      }
       return res.json({
-        items: await getContextualImageCandidates({ lessonContext, instruction, source, category: req.body.category }),
+        items: await getContextualImageCandidates({ lessonContext, instruction, source, category: imgCategory }),
       });
     }
 
@@ -1539,9 +1761,109 @@ ${contextDocument}
     }
 
     if (kind === "chart") {
+      // The user's typed topic takes priority; lesson context is only background reference
+      const chartTopic = String(instruction || lessonContext.title || "موضوع تعليمي").trim().slice(0, 100);
+      const effectiveChartType = "infographic";
+      const chartLabel = "إنفوجرافيك";
+
+      const makeSvgPrompt = (strict = false) => `أنت خبير تصميم إنفوجرافيك SVG احترافي باللغة العربية.
+أنشئ كود SVG كامل لإنفوجرافيك تعليمي عالي الجودة عن الموضوع: "${chartTopic}"
+
+${contextDocument ? `معلومات مفيدة (استخدمها لملء المحتوى):\n${contextDocument.slice(0, 600)}\n` : ""}
+متطلبات SVG الإلزامية:
+1. يبدأ بـ <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 575">
+2. خلفية بيضاء: <rect width="860" height="575" rx="24" fill="#ffffff"/>
+3. شريط علوي بنفسجي (90px): <rect width="860" height="90" rx="24" fill="#7c3aed"/> ثم <rect y="66" width="860" height="24" fill="#7c3aed"/>
+4. عنوان رئيسي داخل foreignObject في الشريط العلوي:
+   <foreignObject x="0" y="0" width="860" height="90">
+   <div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;align-items:center;justify-content:space-between;height:90px;padding:0 24px;direction:rtl;font-family:Cairo,Arial,sans-serif;box-sizing:border-box">
+   <span style="font-size:24px;font-weight:900;color:white">[العنوان هنا]</span>
+   <span style="font-size:13px;color:rgba(255,255,255,0.8)">📊 إنفوجرافيك تعليمي</span>
+   </div></foreignObject>
+5. أربعة بطاقات في شبكة 2×2:
+   - البطاقة 1: x=15 y=105 width=400 height=205 fill="#ede9fe" stroke="#c4b5fd"
+   - البطاقة 2: x=445 y=105 width=400 height=205 fill="#dbeafe" stroke="#93c5fd"
+   - البطاقة 3: x=15 y=325 width=400 height=205 fill="#dcfce7" stroke="#86efac"
+   - البطاقة 4: x=445 y=325 width=400 height=205 fill="#fef9c3" stroke="#fde047"
+6. محتوى كل بطاقة داخل foreignObject (هذا ضروري للنص العربي):
+   <rect x="[x]" y="[y]" width="400" height="205" rx="18" fill="[bg]" stroke="[border]" stroke-width="1.5"/>
+   <foreignObject x="[x]" y="[y]" width="400" height="205">
+   <div xmlns="http://www.w3.org/1999/xhtml" style="direction:rtl;padding:18px 20px;font-family:Cairo,Arial,sans-serif;box-sizing:border-box;width:100%;height:100%;overflow:hidden">
+   <div style="font-size:16px;font-weight:800;color:[headingColor];margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid [border]">[عنوان البطاقة]</div>
+   <div style="font-size:13px;color:#334155;line-height:1.65">[محتوى البطاقة - جملتان أو ثلاث جمل]</div>
+   </div></foreignObject>
+7. ألوان العناوين: بطاقة1=#6d28d9, بطاقة2=#1d4ed8, بطاقة3=#15803d, بطاقة4=#a16207
+8. تذييل: <rect x="0" y="545" width="860" height="30" rx="24" fill="#f8f7ff"/>
+9. لا تستخدم <text> أو <tspan> لأي محتوى عربي — فقط foreignObject
+10. كل foreignObject يجب أن يحتوي على xmlns="http://www.w3.org/1999/xhtml" في div الخارجي
+${strict ? "11. إلزامي: يجب أن يحتوي SVG على 4 foreignObject للبطاقات بعناوين ومحتوى مناسب للموضوع." : ""}
+
+أعد كود SVG الكامل فقط. يبدأ بـ <svg ويينتهي بـ </svg>. بدون أي نص أو شرح.`;
+
+      // Ask model to generate SVG with one retry and quality validation
+      try {
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          const svgPrompt = makeSvgPrompt(attempt === 2);
+          const invokeResult = await invokeClaudeWithFallback(svgPrompt, 3500, `SVG chart generation (try ${attempt})`);
+          const rawText = String(invokeResult.text || "");
+          const svgMatch = rawText.match(/<svg[\s\S]*?<\/svg>/i);
+          if (!svgMatch) continue;
+          const generatedSvg = svgMatch[0];
+          if (!validateGeneratedSvg(generatedSvg)) continue;
+
+          return res.json({
+            preview: {
+              title: chartTopic,
+              description: `${chartLabel} مولَّد بالذكاء الاصطناعي عن: ${chartTopic}`,
+              svg: generatedSvg,
+              chartType: effectiveChartType,
+              source: "ai-svg",
+            },
+          });
+        }
+        throw new Error("Model SVG failed quality validation");
+      } catch (chartErr) {
+        console.warn("[generate-contextual-content:chart] SVG generation failed, using local fallback:", chartErr.message);
+      }
+
       return res.json({
-        preview: createContextualChartPreview({ lessonContext, instruction, chartType }),
+        preview: createContextualChartPreview({ lessonContext, instruction: chartTopic, chartType: effectiveChartType }),
       });
+    }
+    // Unified endpoint for the AI generation panel with context-aware prompts
+    if (kind === "ai-generate") {
+      const genType = req.body.genType || "image"; // image | diagram | infographic
+      const topic = String(instruction || lessonContext.title || "").trim().slice(0, 120);
+
+      if (genType === "image") {
+        // Build a rich AI image prompt using lesson context
+        const contextHint = lessonContext.title
+          ? ` in the context of: ${String(lessonContext.title).trim().slice(0, 60)}`
+          : "";
+        const enrichedInstruction = `${topic}${contextHint}`;
+        return res.json({
+          items: await getContextualImageCandidates({
+            lessonContext,
+            instruction: enrichedInstruction,
+            source: "ai",
+            category: "illustration",
+          }),
+        });
+      }
+
+      if (genType === "diagram" || genType === "infographic") {
+        const chartType = genType === "diagram" ? "diagram" : "infographic";
+        // Build a context-aware instruction for the chart
+        const contextSections = (lessonContext.sections || []).slice(0, 3).map(s => s.heading).filter(Boolean).join("، ");
+        const enrichedInstruction = contextSections
+          ? `${topic} — يشمل: ${contextSections}`
+          : topic;
+        return res.json({
+          preview: createContextualChartPreview({ lessonContext, instruction: enrichedInstruction, chartType }),
+        });
+      }
+
+      return res.status(400).json({ error: `Unsupported genType: ${genType}` });
     }
 
     return res.status(400).json({ error: `Unsupported kind: ${kind}` });
@@ -1801,9 +2123,15 @@ Return ONLY the raw SVG string, no JSON, no markdown:
     res.json(result);
   } catch (err) {
     const normalized = normalizeBedrockError(err, "Lesson generation");
-    if (normalized.code === "DAILY_TOKEN_LIMIT") {
-      console.warn("Bedrock daily token limit reached; using local lesson fallback.");
+    if (normalized.code === "DAILY_TOKEN_LIMIT" || normalized.code === "AUTH_ERROR") {
+      if (normalized.code === "AUTH_ERROR") {
+        console.warn("[generate-lesson] AWS credentials invalid/expired; using local lesson fallback.");
+      } else {
+        console.warn("Bedrock daily token limit reached; using local lesson fallback.");
+      }
       const fallbackResult = buildLocalLesson(input, enrich);
+      fallbackResult.fallback = true;
+      fallbackResult.fallbackReason = normalized.code === "AUTH_ERROR" ? "credentials" : "quota";
       if (normalized.retryAfterSeconds) {
         fallbackResult.retryAfterSeconds = normalized.retryAfterSeconds;
       }

@@ -658,8 +658,42 @@ function ContextualTextModal({ lessonContext, blocks, onClose, onAdd, defaultMod
 }
 
 function ImageAssetCard({ item, selected, onSelect }) {
-  const [imgState, setImgState] = React.useState("loading"); // loading | loaded | failed
+  const [imgState, setImgState] = React.useState("loading"); // loading | loaded | failed | retrying
+  const [retryCount, setRetryCount] = React.useState(0);
   const isAi = item.source === "ai" || item.searchMode === "pollinations";
+  const retryTimerRef = React.useRef(null);
+
+  // For Pollinations AI images: auto-retry up to 3 times with increasing delays
+  // because the image is generated on-demand and may take 15-40 seconds
+  const handleError = React.useCallback(() => {
+    if (isAi && retryCount < 3) {
+      setImgState("retrying");
+      const delay = (retryCount + 1) * 8000; // 8s, 16s, 24s
+      retryTimerRef.current = setTimeout(() => {
+        setRetryCount(c => c + 1);
+        setImgState("loading");
+      }, delay);
+    } else {
+      setImgState("failed");
+    }
+  }, [isAi, retryCount]);
+
+  React.useEffect(() => {
+    return () => { if (retryTimerRef.current) clearTimeout(retryTimerRef.current); };
+  }, []);
+
+  // Force re-render of img src on retry by appending retry count as cache-buster
+  const imgSrc = React.useMemo(() => {
+    const base = item.url || item.thumbnailUrl || "";
+    if (!isAi || retryCount === 0) return base;
+    const sep = base.includes("?") ? "&" : "?";
+    return `${base}${sep}_r=${retryCount}`;
+  }, [item.url, item.thumbnailUrl, isAi, retryCount]);
+
+  const isGenerating = isAi && (imgState === "loading" || imgState === "retrying");
+  const generatingLabel = imgState === "retrying"
+    ? `إعادة المحاولة ${retryCount}/3…`
+    : "يتم التوليد…";
 
   return (
     <div
@@ -669,24 +703,24 @@ function ImageAssetCard({ item, selected, onSelect }) {
     >
       {/* Thumbnail area */}
       <div style={{ position: "relative", aspectRatio: "16/10", overflow: "hidden", background: isAi ? "linear-gradient(135deg,#6d28d9,#4f46e5)" : "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        {/* AI Loading spinner */}
-        {isAi && imgState === "loading" && (
+        {/* AI Generating spinner */}
+        {isGenerating && (
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#fff", zIndex: 2 }}>
             <div style={{ width: 26, height: 26, border: "3px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-            <span style={{ fontSize: 11, fontWeight: 700 }}>يتم التوليد…</span>
-            <span style={{ fontSize: 10, opacity: 0.75 }}>تصبر 10–30 ثانية</span>
+            <span style={{ fontSize: 11, fontWeight: 700 }}>{generatingLabel}</span>
+            <span style={{ fontSize: 10, opacity: 0.75 }}>قد يستغرق 15–40 ثانية</span>
           </div>
         )}
-        {/* AI failed — show open-in-browser */}
+        {/* AI truly failed after retries — show open link, NOT "تحتاج متصفح" */}
         {isAi && imgState === "failed" && (
-          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#fff", padding: 12, zIndex: 2, textAlign: "center" }}>
-            <span style={{ fontSize: 22 }}>🎨</span>
-            <span style={{ fontSize: 11, fontWeight: 700, lineHeight: 1.5 }}>الصورة تحتاج<br/>متصفح لعرضها</span>
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "#fff", padding: 12, zIndex: 2, textAlign: "center" }}>
+            <span style={{ fontSize: 28 }}>🎨</span>
+            <span style={{ fontSize: 12, fontWeight: 700, lineHeight: 1.6 }}>الصورة جاهزة<br/>افتح الرابط لعرضها</span>
             <a
               href={item.url} target="_blank" rel="noreferrer"
               onClick={e => e.stopPropagation()}
-              style={{ padding: "5px 14px", background: "rgba(255,255,255,0.22)", border: "1px solid rgba(255,255,255,0.5)", color: "#fff", borderRadius: 8, fontSize: 11, fontWeight: 700, textDecoration: "none" }}
-            >🔗 فتح الصورة</a>
+              style={{ padding: "6px 16px", background: "rgba(255,255,255,0.25)", border: "1px solid rgba(255,255,255,0.6)", color: "#fff", borderRadius: 10, fontSize: 12, fontWeight: 700, textDecoration: "none" }}
+            >🔗 عرض الصورة ↗</a>
           </div>
         )}
         {/* Stock failed */}
@@ -694,11 +728,12 @@ function ImageAssetCard({ item, selected, onSelect }) {
           <div style={{ fontSize: 28, opacity: 0.4 }}>🖼️</div>
         )}
         <img
-          src={item.url || item.thumbnailUrl}
+          key={imgSrc}
+          src={imgSrc}
           alt={item.title}
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: imgState === "loaded" ? 1 : 0, transition: "opacity 0.4s" }}
           onLoad={() => setImgState("loaded")}
-          onError={() => setImgState("failed")}
+          onError={handleError}
         />
         {/* Source badge */}
         <div style={{ position: "absolute", top: 6, right: 6, padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, background: isAi ? "#7c3aed" : "rgba(0,0,0,0.55)", color: "#fff", zIndex: 3 }}>
@@ -722,56 +757,129 @@ function ImageAssetCard({ item, selected, onSelect }) {
 
 function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
   const contextPayload = useMemo(() => buildLessonContextPayload(lessonContext, blocks), [lessonContext, blocks]);
-  const [tab, setTab] = useState("stock");
-  const [category, setCategory] = useState("diagram");
-  const [instruction, setInstruction] = useState("");
-  const [items, setItems] = useState([]);
+
+  // ── Central state ──────────────────────────────────────────────────────────
+  const initialQuery = "";
+  const [state, setState] = useState({
+    query: initialQuery,
+    activeTab: "stock",      // stock | ai | library | url | upload
+    activeCategory: "photo", // photo | illustration | infographic
+    mode: "search",
+    results: [],
+    loading: false,
+    error: null,
+    hasSearched: false,
+  });
+
+  // Derived aliases for readability
+  const tab = state.activeTab;
+  const category = state.activeCategory;
+  const instruction = state.query;
+  const items = state.results;
+  const loading = state.loading;
+  const errorMessage = state.error;
+  const hasSearched = state.hasSearched;
+
   const [selected, setSelected] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
   const [directUrl, setDirectUrl] = useState("");
-  const [hasSearched, setHasSearched] = useState(false);
   const inputRef = useRef(null);
   const imageLibrary = useMemo(() => blocks.filter((block) => block.type === "image"), [blocks]);
 
-  // Focus input on mount
-  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 100); }, []);
+  // Focus input on mount only — search is triggered explicitly by the user
+  useEffect(() => {
+    setTimeout(() => inputRef.current?.focus(), 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const setInstruction = (value) => setState(prev => ({ ...prev, query: value }));
+
+  // Single SVG category to avoid duplicate low-quality outputs
+  const SVG_CATEGORIES = ["infographic"];
+  // Categories that always use AI image generation
+  const AI_ONLY_CATEGORIES = ["illustration"];
 
   const doSearch = async (targetTab = tab, targetCategory = category, searchQuery = instruction) => {
     if (targetTab === "url" || targetTab === "upload" || targetTab === "library") return;
     if (!searchQuery.trim()) {
-      setErrorMessage("اكتب كلمة أو موضوعاً في حقل البحث أولاً");
+      setState(prev => ({ ...prev, error: "اكتب كلمة أو موضوعاً في حقل البحث أولاً" }));
       return;
     }
-    setLoading(true);
-    setErrorMessage("");
-    setHasSearched(true);
+    setState(prev => ({ ...prev, loading: true, error: null, hasSearched: true }));
     try {
+      // ── SVG route: infographic only ───────────────────────────────────────
+      if (SVG_CATEGORIES.includes(targetCategory)) {
+        const chartType = "infographic";
+        const data = await requestContextualGeneration({
+          kind: "chart",
+          lessonContext: contextPayload,
+          instruction: searchQuery,
+          chartType,
+        });
+        const preview = data.preview;
+        if (!preview?.svg) throw new Error("لم يتم توليد المخطط");
+        const svgItem = {
+          id: `svg-${targetCategory}-${Date.now()}`,
+          title: preview.title || searchQuery,
+          caption: preview.description || "",
+          svg: preview.svg,
+          source: "ai-svg",
+          category: targetCategory,
+        };
+        setState(prev => ({ ...prev, loading: false, results: [svgItem], error: null }));
+        setSelected(svgItem);
+        return;
+      }
+
+      // ── AI illustration route ──────────────────────────────────────────────
+      const forceAi = AI_ONLY_CATEGORIES.includes(targetCategory);
+      const effectiveSource = forceAi ? "ai" : (targetTab === "ai" ? "ai" : "stock");
+
+      // ── Standard image search ─────────────────────────────────────────────
       const data = await requestContextualGeneration({
         kind: "image",
         lessonContext: contextPayload,
         instruction: searchQuery,
-        source: targetTab === "ai" ? "ai" : "stock",
+        source: effectiveSource,
         category: targetCategory,
       });
       const nextItems = data.items || [];
-      setItems(nextItems);
+      setState(prev => ({
+        ...prev,
+        loading: false,
+        results: nextItems,
+        error: nextItems.length ? null : `لا توجد نتائج لـ "${searchQuery}". جرّب كلمة أخرى.`,
+      }));
       setSelected(nextItems[0] || null);
-      if (!nextItems.length) setErrorMessage(`لا توجد نتائج لـ "${searchQuery}". جرّب كلمة أخرى.`);
     } catch (error) {
-      setErrorMessage(error.message || "تعذر تنفيذ طلب البحث");
-      setItems([]);
+      setState(prev => ({
+        ...prev,
+        loading: false,
+        results: [],
+        error: error.message || "تعذر تنفيذ طلب البحث",
+      }));
       setSelected(null);
     }
-    setLoading(false);
   };
 
   const handleTabChange = (value) => {
-    setTab(value);
-    setItems([]);
-    setErrorMessage("");
-    setHasSearched(false);
+    setState(prev => ({
+      ...prev,
+      activeTab: value,
+      results: [],
+      error: null,
+      hasSearched: false,
+    }));
     setSelected(null);
+  };
+
+  // Re-run search automatically when category changes and results already exist
+  const handleCategoryChange = (value) => {
+    setState(prev => ({ ...prev, activeCategory: value, results: [], hasSearched: false }));
+    setSelected(null);
+    if (instruction.trim()) {
+      // Always re-run when changing category (SVG/AI/stock all need fresh results)
+      doSearch(tab, value, instruction);
+    }
   };
 
   const handleUpload = (event) => {
@@ -781,18 +889,18 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
     reader.onload = () => {
       const uploaded = { id: `upload-${Date.now()}`, title: file.name, caption: "ملف من مكتبة المستخدم", url: reader.result, source: "upload" };
       setSelected(uploaded);
-      setTab("upload");
+      setState(prev => ({ ...prev, activeTab: "upload" }));
     };
     reader.readAsDataURL(file);
   };
 
-  const CATEGORIES = [["diagram","📊 مخطط"], ["photo","📷 صورة"], ["illustration","🎨 رسم"], ["infographic","📋 إنفوجرافيك"]];
+  const CATEGORIES = [["photo","📷 صورة"], ["illustration","🎨 رسم AI"], ["infographic","📋 إنفوجرافيك SVG"]];
   const isSearchTab = tab === "stock" || tab === "ai";
 
   return (
     <ModalShell
       title="🖼️ مستكشف الصور الذكي"
-      subtitle="ابحث في ملايين الصور أو ولّد صوراً بالذكاء الاصطناعي — اكتب الموضوع واضغط بحث"
+      subtitle="صورة = بحث ، إنفوجرافيك = SVG ذكي ، رسم = توليد AI — اكتب الموضوع واضغط توليد أو بحث"
       lessonContext={lessonContext}
       blocks={blocks}
       onClose={onClose}
@@ -816,8 +924,20 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
             ))}
           </div>
 
-          {/* ── AI notice ── */}
-          {tab === "ai" && (
+          {/* ── Info banners ── */}
+          {SVG_CATEGORIES.includes(category) && (
+            <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "linear-gradient(135deg,#eff6ff,#ede9fe)", border: "1px solid #a5b4fc", fontSize: 12, fontWeight: 700, color: "#3730a3", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 18 }}>📊</span>
+              <span>سيُولَّد إنفوجرافيك تعليمي بصيغة SVG مرتبط بكلمة البحث — ليس صورة من الإنترنت.</span>
+            </div>
+          )}
+          {AI_ONLY_CATEGORIES.includes(category) && (
+            <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "linear-gradient(135deg,#fdf4ff,#ede9fe)", border: "1px solid #d8b4fe", fontSize: 12, fontWeight: 700, color: "#6b21a8", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 18 }}>🎨</span>
+              <span>Pollinations AI يولّد رسماً توضيحياً من كلمتك — قد يستغرق 15–40 ثانية.</span>
+            </div>
+          )}
+          {tab === "ai" && !SVG_CATEGORIES.includes(category) && !AI_ONLY_CATEGORIES.includes(category) && (
             <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "linear-gradient(135deg,#ede9fe,#dbeafe)", border: "1px solid #c4b5fd", fontSize: 12, fontWeight: 700, color: "#5b21b6", display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 18 }}>⚡</span>
               <span>Pollinations AI يولّد صوراً حقيقية من كلمتك — تحتاج 15–40 ثانية للظهور. إذا ظهرت رمادية افتح الرابط ↗</span>
@@ -832,7 +952,7 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
                 {CATEGORIES.map(([value, label]) => (
                   <button
                     key={value}
-                    onClick={() => setCategory(value)}
+                    onClick={() => handleCategoryChange(value)}
                     style={{ padding: "5px 12px", borderRadius: 16, border: `1.5px solid ${category === value ? "#7c3aed" : "#e2e8f0"}`, background: category === value ? "#ede9fe" : "#fff", color: category === value ? "#7c3aed" : "#64748b", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "Cairo, Arial" }}
                   >{label}</button>
                 ))}
@@ -846,7 +966,13 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
                   value={instruction}
                   onChange={e => setInstruction(e.target.value)}
                   onKeyDown={e => { if (e.key === "Enter") doSearch(tab, category, instruction); }}
-                  placeholder={tab === "ai" ? "مثال: دورة دموية، طاقة شمسية، ذكاء اصطناعي..." : "مثال: قلب، كيمياء، هندسة..."}
+                  placeholder={
+                    SVG_CATEGORIES.includes(category)
+                      ? "مثال: وحدة المعالجة المركزية، دورة الماء، فوائد التكنولوجيا…"
+                      : AI_ONLY_CATEGORIES.includes(category)
+                      ? "مثال: شبكة عصبية، خلية حيوانية، جزيء ماء…"
+                      : tab === "ai" ? "مثال: دورة دموية، طاقة شمسية، ذكاء اصطناعي..." : "مثال: قلب، كيمياء، هندسة..."
+                  }
                   style={{ flex: 1, padding: "11px 14px", borderRadius: 12, border: "2px solid #e2e8f0", fontSize: 14, fontFamily: "Cairo, Arial", outline: "none", transition: "border .15s" }}
                   onFocus={e => e.target.style.borderColor = "#7c3aed"}
                   onBlur={e => e.target.style.borderColor = "#e2e8f0"}
@@ -854,9 +980,12 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
                 <button
                   onClick={() => doSearch(tab, category, instruction)}
                   disabled={loading || !instruction.trim()}
-                  style={{ padding: "11px 20px", borderRadius: 12, border: "none", background: loading ? "#a78bfa" : (tab === "ai" ? "#6d28d9" : "#4f46e5"), color: "#fff", fontWeight: 800, fontSize: 14, cursor: loading ? "not-allowed" : "pointer", fontFamily: "Cairo, Arial", whiteSpace: "nowrap", minWidth: 110 }}
+                  style={{ padding: "11px 20px", borderRadius: 12, border: "none", background: loading ? "#a78bfa" : SVG_CATEGORIES.includes(category) ? "#2563eb" : AI_ONLY_CATEGORIES.includes(category) ? "#7c3aed" : tab === "ai" ? "#6d28d9" : "#4f46e5", color: "#fff", fontWeight: 800, fontSize: 14, cursor: loading ? "not-allowed" : "pointer", fontFamily: "Cairo, Arial", whiteSpace: "nowrap", minWidth: 110 }}
                 >
-                  {loading ? "⏳ جارٍ..." : tab === "ai" ? "⚡ توليد" : "🔍 بحث"}
+                  {loading ? "⏳ جارٍ..."
+                    : SVG_CATEGORIES.includes(category) ? "📊 توليد"
+                    : AI_ONLY_CATEGORIES.includes(category) ? "🎨 توليد"
+                    : tab === "ai" ? "⚡ توليد" : "🔍 بحث"}
                 </button>
               </div>
 
@@ -870,11 +999,19 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
               {/* Empty state */}
               {!loading && !hasSearched && (
                 <div style={{ textAlign: "center", padding: "40px 20px", color: "#94a3b8" }}>
-                  <div style={{ fontSize: 48, marginBottom: 12 }}>{tab === "ai" ? "🎨" : "🔍"}</div>
-                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6, color: "#64748b" }}>
-                    {tab === "ai" ? "ولّد صورة بالذكاء الاصطناعي" : "ابحث في ملايين الصور"}
+                  <div style={{ fontSize: 48, marginBottom: 12 }}>
+                    {SVG_CATEGORIES.includes(category) ? "📊" : AI_ONLY_CATEGORIES.includes(category) ? "🎨" : tab === "ai" ? "🎨" : "🔍"}
                   </div>
-                  <div style={{ fontSize: 13 }}>اكتب موضوعاً واضغط {tab === "ai" ? "⚡ توليد" : "🔍 بحث"}</div>
+                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6, color: "#64748b" }}>
+                    {SVG_CATEGORIES.includes(category)
+                      ? "ولّد إنفوجرافيك بالذكاء الاصطناعي"
+                      : AI_ONLY_CATEGORIES.includes(category)
+                      ? "ولّد رسماً توضيحياً بالذكاء الاصطناعي"
+                      : tab === "ai" ? "ولّد صورة بالذكاء الاصطناعي" : "ابحث في ملايين الصور"}
+                  </div>
+                  <div style={{ fontSize: 13 }}>اكتب موضوعاً واضغط
+                    {SVG_CATEGORIES.includes(category) || AI_ONLY_CATEGORIES.includes(category) ? " ⚡ توليد" : tab === "ai" ? " ⚡ توليد" : " 🔍 بحث"}
+                  </div>
                 </div>
               )}
 
@@ -882,16 +1019,32 @@ function ContextualImageModal({ lessonContext, blocks, onClose, onAdd }) {
               {loading && <LoadingGrid />}
               {!loading && hasSearched && items.length > 0 && (
                 <>
-                  {tab === "ai" && (
-                    <div style={{ marginBottom: 10, fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>
-                      ⚡ {items.length} صور AI — قد تأخذ وقتاً للظهور. انقر على الصورة لمعاينتها أو افتح الرابط ↗
+                  {/* SVG result (diagram / infographic) */}
+                  {items[0]?.svg ? (
+                    <div
+                      onClick={() => setSelected(items[0])}
+                      style={{ cursor: "pointer", borderRadius: 16, border: `2px solid ${selected?.id === items[0].id ? "#7c3aed" : "#e2e8f0"}`, overflow: "hidden", background: "#fff", boxShadow: selected?.id === items[0].id ? "0 0 0 3px rgba(124,58,237,.18)" : "none", transition: "all .15s" }}
+                    >
+                      <div style={{ padding: 12 }} dangerouslySetInnerHTML={{ __html: items[0].svg }} />
+                      <div style={{ padding: "8px 14px 12px", borderTop: "1px solid #f1f5f9" }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#1e1b4b" }}>{items[0].title}</div>
+                        {items[0].caption && <div style={{ fontSize: 11, color: "#64748b", marginTop: 3 }}>{items[0].caption}</div>}
+                      </div>
                     </div>
+                  ) : (
+                    <>
+                      {tab === "ai" && (
+                        <div style={{ marginBottom: 10, fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>
+                          ⚡ {items.length} صور AI — قد تأخذ وقتاً للظهور. انقر على الصورة لمعاينتها أو افتح الرابط ↗
+                        </div>
+                      )}
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+                        {items.map(item => (
+                          <ImageAssetCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={setSelected} />
+                        ))}
+                      </div>
+                    </>
                   )}
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
-                    {items.map(item => (
-                      <ImageAssetCard key={item.id} item={item} selected={selected?.id === item.id} onSelect={setSelected} />
-                    ))}
-                  </div>
                 </>
               )}
             </>
@@ -1219,56 +1372,130 @@ function HeadingModal({ onClose, onAdd }) {
   );
 }
 
-function QuizModal({ lessonContext, onClose, onAdd }) {
+function QuizModal({ lessonContext, blocks = [], onClose, onAdd }) {
+  const contextPayload = useMemo(() => buildLessonContextPayload(lessonContext, blocks), [lessonContext, blocks]);
   const [level, setLevel] = useState("medium");
+  const [questionCount, setQuestionCount] = useState(5);
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null);
+  const [errorMessage, setErrorMessage] = useState("");
 
   const run = async () => {
     setLoading(true);
+    setErrorMessage("");
+    setPreview(null);
     try {
-      const count = level === "easy" ? 5 : level === "medium" ? 8 : 10;
-      const text = `أنشئ ${count} أسئلة اختيار من متعدد بالعربية عن ${lessonContext.title || "الدرس الحالي"} مع الاعتماد على أقسام الدرس الحالية فقط.`;
-      const response = await fetch("/generate-lesson", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+      const data = await requestContextualGeneration({
+        kind: "quiz",
+        lessonContext: contextPayload,
+        instruction: lessonContext.title || "الدرس الحالي",
+        questionCount,
+        level,
       });
-      const data = await response.json().catch(() => ({}));
-      setPreview(data.quiz || []);
+      const questions = data.questions || [];
+      if (!questions.length) throw new Error("لم يتم توليد أي أسئلة");
+      setPreview(questions);
     } catch (error) {
-      setPreview([]);
+      setErrorMessage(error.message || "تعذر توليد الاختبار، حاول مرة أخرى");
     }
     setLoading(false);
   };
 
   return (
-    <ModalShell title="اختبار سياقي" subtitle="إنشاء بنك أسئلة مرتبط بعنوان الدرس الحالي فقط قبل الإدراج." lessonContext={lessonContext} blocks={[]} onClose={onClose}>
+    <ModalShell
+      title="🎓 مولد الاختبار السياقي"
+      subtitle="ينشئ أسئلة اختيار من متعدد مرتبطة بمحتوى الدرس الحالي، مع معاينة كاملة قبل الإدراج."
+      lessonContext={lessonContext}
+      blocks={blocks}
+      onClose={onClose}
+    >
       <div className="ctx-layout">
         <div className="ctx-card">
-          <div className="ctx-segmented">
-            {[["easy", "سهل"], ["medium", "متوسط"], ["hard", "متقدم"]].map(([value, label]) => (
-              <button key={value} className={level === value ? "active" : ""} onClick={() => setLevel(value)}>{label}</button>
-            ))}
+
+          {/* Level selector */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 8 }}>مستوى الصعوبة</div>
+            <div className="ctx-segmented">
+              {[["easy", "سهل 🟢"], ["medium", "متوسط 🟡"], ["hard", "متقدم 🔴"]].map(([value, label]) => (
+                <button key={value} className={level === value ? "active" : ""} onClick={() => setLevel(value)}>{label}</button>
+              ))}
+            </div>
           </div>
-          <button className="ctx-button primary" onClick={run} disabled={loading}>{loading ? "جارٍ التوليد..." : "إنشاء المعاينة"}</button>
+
+          {/* Question count */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 8 }}>
+              عدد الأسئلة: <span style={{ color: "#7c3aed", fontSize: 16 }}>{questionCount}</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button
+                onClick={() => setQuestionCount(c => Math.max(3, c - 1))}
+                style={{ width: 36, height: 36, borderRadius: "50%", border: "1.5px solid #e2e8f0", background: "#f8fafc", cursor: "pointer", fontSize: 18, fontWeight: 700, color: "#334155", display: "flex", alignItems: "center", justifyContent: "center" }}
+              >−</button>
+              <input
+                type="range"
+                min={3}
+                max={15}
+                value={questionCount}
+                onChange={e => setQuestionCount(Number(e.target.value))}
+                style={{ flex: 1, accentColor: "#7c3aed", cursor: "pointer" }}
+              />
+              <button
+                onClick={() => setQuestionCount(c => Math.min(15, c + 1))}
+                style={{ width: 36, height: 36, borderRadius: "50%", border: "1.5px solid #e2e8f0", background: "#f8fafc", cursor: "pointer", fontSize: 18, fontWeight: 700, color: "#334155", display: "flex", alignItems: "center", justifyContent: "center" }}
+              >+</button>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 11, color: "#94a3b8" }}>
+              <span>3 (أدنى)</span><span>15 (أقصى)</span>
+            </div>
+          </div>
+
+          <button className="ctx-button primary" onClick={run} disabled={loading}>
+            {loading ? "⏳ جارٍ التوليد..." : `⚡ إنشاء ${questionCount} سؤال`}
+          </button>
+
+          {errorMessage && (
+            <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 10, border: "1px solid #fecaca", background: "#fef2f2", color: "#b91c1c", fontSize: 13 }}>
+              ⚠️ {errorMessage}
+            </div>
+          )}
+
           {preview?.length > 0 && (
             <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 10 }}>
-              {preview.slice(0, 4).map((question, index) => (
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#6366f1", marginBottom: 4 }}>
+                ✅ {preview.length} سؤال تم توليده — معاينة:
+              </div>
+              {preview.map((question, index) => (
                 <div key={index} className="ctx-card" style={{ background: "#f8fafc" }}>
-                  <div style={{ fontWeight: 800, color: "#1e1b4b", marginBottom: 8 }}>{question.question}</div>
-                  <div className="ctx-inline-note">{question.options?.join(" | ")}</div>
+                  <div style={{ fontWeight: 800, color: "#1e1b4b", marginBottom: 8, fontSize: 14 }}>
+                    {index + 1}. {question.question}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {question.options?.map((opt, oi) => (
+                      <div key={oi} style={{ fontSize: 13, color: opt === question.answer ? "#059669" : "#475569", fontWeight: opt === question.answer ? 700 : 400, padding: "4px 10px", borderRadius: 8, background: opt === question.answer ? "#d1fae5" : "transparent" }}>
+                        {opt === question.answer ? "✓ " : "  "}{opt}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
+
         <PreviewPanel
-          item={preview?.length ? { title: `اختبار ${lessonContext.title || "الدرس"}`, caption: `${preview.length} أسئلة تم تجهيزها للمعاينة` } : null}
-          emptyLabel="أنشئ المعاينة أولاً للتأكد من ارتباط الأسئلة بمحتوى الدرس الحالي."
+          item={preview?.length ? {
+            title: `اختبار: ${lessonContext.title || "الدرس الحالي"}`,
+            caption: `${preview.length} سؤال اختيار من متعدد — مستوى ${level === "easy" ? "سهل" : level === "medium" ? "متوسط" : "متقدم"}`,
+          } : null}
+          emptyLabel="اضبط عدد الأسئلة والصعوبة ثم اضغط إنشاء، وستظهر المعاينة هنا قبل الإدراج في الدرس."
           onRegenerate={run}
           onReset={onClose}
-          onInsert={() => preview?.length && onAdd({ type: "quiz", title: `اختبار ${lessonContext.title || "الدرس"}`, questions: preview })}
+          onInsert={() => preview?.length && onAdd({
+            type: "quiz",
+            title: `اختبار: ${lessonContext.title || "الدرس الحالي"}`,
+            questions: preview,
+          })}
         />
       </div>
     </ModalShell>
@@ -1376,7 +1603,7 @@ export default function ContextualEditorToolbar({ lessonContext, onContentAdd, o
       {activeModal === "video" && <ContextualVideoModal lessonContext={lessonContext} blocks={blocks} onClose={closeModal} onAdd={handleAdd} />}
       {activeModal === "chart" && <ContextualChartModal lessonContext={lessonContext} blocks={blocks} onClose={closeModal} onAdd={handleAdd} />}
       {activeModal === "heading" && <HeadingModal onClose={closeModal} onAdd={handleAdd} />}
-      {activeModal === "quiz" && <QuizModal lessonContext={lessonContext} onClose={closeModal} onAdd={handleAdd} />}
+      {activeModal === "quiz" && <QuizModal lessonContext={lessonContext} blocks={blocks} onClose={closeModal} onAdd={handleAdd} />}
       {activeModal === "reorder" && <ReorderModal blocks={blocks} onClose={closeModal} onReorder={(items) => { onContentReorder(items); closeModal(); }} />}
       {activeModal === "help" && <ContextHelpModal lessonContext={lessonContext} blocks={blocks} onClose={closeModal} />}
     </>
