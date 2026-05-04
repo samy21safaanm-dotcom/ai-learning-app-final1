@@ -19,6 +19,7 @@ export default defineConfig({
       "/media-provider-status": { target: apiTarget, changeOrigin: true },
       "/api/tts": { target: apiTarget, changeOrigin: true },
       "/health": { target: apiTarget, changeOrigin: true },
+      "/local-uploads": { target: apiTarget, changeOrigin: true },
     },
   },
 });

@@ -120,7 +120,9 @@ function makeLocalFileKey(localName) {
 }
 
 function makeLocalFileUrl(localName) {
-  return `http://localhost:${PORT}/local-uploads/${encodeURIComponent(localName)}`;
+  const pathPart = `/local-uploads/${encodeURIComponent(localName)}`;
+  const publicBase = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
+  return publicBase ? `${publicBase}${pathPart}` : pathPart;
 }
 
 function parseLocalFileNameFromKey(key) {

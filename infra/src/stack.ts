@@ -145,13 +145,22 @@ server {
     }
 
     # Proxy API to Express
-    location ~ ^/(upload|files|extract|translate|generate-lesson|generate-images|generate-simulation) {
+    location ~ ^/(upload|files|extract|translate|generate-lesson|generate-images|generate-simulation|generate-contextual-content|media-provider-status|health|debug/force-test|api/tts) {
         proxy_pass http://127.0.0.1:4000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         client_max_body_size 15M;
+    }
+
+    # Local file fallback storage path
+    location ^~ /local-uploads/ {
+      proxy_pass http://127.0.0.1:4000;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
 NGINX`,
