@@ -21,7 +21,7 @@ jobs:
           script: |
             cd /opt/app
             git pull origin main
-            export AWS_REGION=${{ secrets.AWS_REGION }}
-            export S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
+            export AWS_REGION=us-east-1
+            export S3_BUCKET_NAME=ai-learning-files-573631992340-1776631274676
             export DB_HOST=${{ secrets.DB_HOST }}
             bash scripts/deploy.sh
