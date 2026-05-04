@@ -17,6 +17,9 @@ function getPool() {
       password: process.env.DB_PASSWORD,
       ssl:      { rejectUnauthorized: false },
       max: 5,
+      connectionTimeoutMillis: 5000,
+      idleTimeoutMillis: 10000,
+      statement_timeout: 8000,
     });
     pool.on("error", (err) => console.error("PG pool error:", err.message));
   }
@@ -40,33 +43,46 @@ async function initDb() {
   console.log("DB: table ready");
 }
 
-/** Insert a file record. Silently skips if DB is not configured. */
+/** Insert a file record. Silently skips if DB is not configured or unreachable. */
 async function insertFile({ key, name, size, mimeType }) {
   const p = getPool();
   if (!p) return;
-  await p.query(
-    `INSERT INTO uploaded_files (s3_key, name, size, mime_type)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (s3_key) DO NOTHING`,
-    [key, name, size, mimeType]
-  );
+  try {
+    await p.query(
+      `INSERT INTO uploaded_files (s3_key, name, size, mime_type)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (s3_key) DO NOTHING`,
+      [key, name, size, mimeType]
+    );
+  } catch (err) {
+    console.error("DB insertFile error (non-fatal):", err.message);
+  }
 }
 
 /** Delete a file record by S3 key. */
 async function deleteFile(key) {
   const p = getPool();
   if (!p) return;
-  await p.query("DELETE FROM uploaded_files WHERE s3_key = $1", [key]);
+  try {
+    await p.query("DELETE FROM uploaded_files WHERE s3_key = $1", [key]);
+  } catch (err) {
+    console.error("DB deleteFile error (non-fatal):", err.message);
+  }
 }
 
 /** List all file records ordered by upload time desc. */
 async function listFiles() {
   const p = getPool();
   if (!p) return null;
-  const { rows } = await p.query(
-    "SELECT s3_key AS key, name, size, mime_type AS \"mimeType\", uploaded_at AS \"uploadedAt\" FROM uploaded_files ORDER BY uploaded_at DESC"
-  );
-  return rows;
+  try {
+    const { rows } = await p.query(
+      "SELECT s3_key AS key, name, size, mime_type AS \"mimeType\", uploaded_at AS \"uploadedAt\" FROM uploaded_files ORDER BY uploaded_at DESC"
+    );
+    return rows;
+  } catch (err) {
+    console.error("DB listFiles error (non-fatal):", err.message);
+    return null;
+  }
 }
 
 module.exports = { initDb, insertFile, deleteFile, listFiles };
