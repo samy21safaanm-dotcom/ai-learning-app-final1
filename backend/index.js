@@ -55,10 +55,10 @@ const DEFAULT_BEDROCK_MODEL_FALLBACKS = [
   "us.amazon.nova-lite-v1:0",
   "amazon.nova-pro-v1:0",
   "us.amazon.nova-pro-v1:0",
+  "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+  "anthropic.claude-3-7-sonnet-20250219-v1:0",
   "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
   "anthropic.claude-3-5-sonnet-20241022-v2:0",
-  "us.anthropic.claude-3-haiku-20240307-v1:0",
-  "anthropic.claude-3-haiku-20240307-v1:0",
 ];
 
 const hasStaticAwsKeys = Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
