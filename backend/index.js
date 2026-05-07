@@ -50,15 +50,15 @@ if (useAnthropicDirect && !anthropic) {
   console.warn("Warning: USE_ANTHROPIC_DIRECT is true but ANTHROPIC_API_KEY is not set. Will fall back to Bedrock.");
 }
 
-const DEFAULT_BEDROCK_MODEL_ID = "amazon.nova-lite-v1:0";
+const DEFAULT_BEDROCK_MODEL_ID = "amazon.nova-pro-v1:0";
 const DEFAULT_BEDROCK_MODEL_FALLBACKS = [
-  "us.amazon.nova-lite-v1:0",
-  "amazon.nova-pro-v1:0",
   "us.amazon.nova-pro-v1:0",
+  "amazon.nova-lite-v1:0",
+  "us.amazon.nova-lite-v1:0",
+  "anthropic.claude-3-5-sonnet-20241022-v2:0",
+  "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
   "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
   "anthropic.claude-3-7-sonnet-20250219-v1:0",
-  "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-  "anthropic.claude-3-5-sonnet-20241022-v2:0",
 ];
 
 const hasStaticAwsKeys = Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
@@ -417,6 +417,20 @@ function normalizeBedrockError(err, prefix) {
     };
   }
 
+  const isModelEndOfLife =
+    messageLower.includes("reached the end of its life") ||
+    messageLower.includes("end of its life") ||
+    messageLower.includes("end-of-life");
+
+  if (isModelEndOfLife) {
+    return {
+      status: 410,
+      code: "MODEL_EOL",
+      retryAfterSeconds: null,
+      message: `${prefix} failed: This model version is no longer available and will be skipped.`,
+    };
+  }
+
   return {
     status: 500,
     code: "GENERATION_FAILED",
@@ -441,7 +455,8 @@ function isBlockedLegacyModel(modelId) {
   const id = String(modelId || "").toLowerCase();
   return (
     id.includes("claude-3-5-haiku-20241022") ||
-    id.includes("claude-3-haiku-20240307")
+    id.includes("claude-3-haiku-20240307") ||
+    id.includes("claude-3-7-sonnet-20250219")
   );
 }
 
@@ -674,7 +689,8 @@ async function invokeClaudeWithFallback(prompt, maxTokens, prefix) {
           normalized.code === "DAILY_TOKEN_LIMIT" ||
           normalized.code === "THROTTLED" ||
           normalized.code === "INFERENCE_PROFILE_REQUIRED" ||
-          normalized.code === "AUTH_ERROR";
+          normalized.code === "AUTH_ERROR" ||
+          normalized.code === "MODEL_EOL";
 
         if (canTryAnotherModel) break;
         throw err;
@@ -2125,15 +2141,21 @@ Return ONLY the raw SVG string, no JSON, no markdown:
     res.json(result);
   } catch (err) {
     const normalized = normalizeBedrockError(err, "Lesson generation");
-    if (normalized.code === "DAILY_TOKEN_LIMIT" || normalized.code === "AUTH_ERROR") {
+    if (normalized.code === "DAILY_TOKEN_LIMIT" || normalized.code === "AUTH_ERROR" || normalized.code === "MODEL_EOL") {
       if (normalized.code === "AUTH_ERROR") {
         console.warn("[generate-lesson] AWS credentials invalid/expired; using local lesson fallback.");
+      } else if (normalized.code === "MODEL_EOL") {
+        console.warn("[generate-lesson] Remaining Bedrock models are unavailable/end-of-life; using local lesson fallback.");
       } else {
         console.warn("Bedrock daily token limit reached; using local lesson fallback.");
       }
       const fallbackResult = buildLocalLesson(input, enrich);
       fallbackResult.fallback = true;
-      fallbackResult.fallbackReason = normalized.code === "AUTH_ERROR" ? "credentials" : "quota";
+      fallbackResult.fallbackReason = normalized.code === "AUTH_ERROR"
+        ? "credentials"
+        : normalized.code === "MODEL_EOL"
+          ? "model-unavailable"
+          : "quota";
       if (normalized.retryAfterSeconds) {
         fallbackResult.retryAfterSeconds = normalized.retryAfterSeconds;
       }

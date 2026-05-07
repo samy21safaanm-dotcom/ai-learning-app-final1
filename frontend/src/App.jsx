@@ -109,8 +109,15 @@ function Spinner({ small }) {
 }
 
 // ── SCORM Export ───────────────────────────────────────────────────────────
-function generateSCORM(lessonData) {
+function generateSCORM(lessonData, contentBlocks = []) {
   const { lesson = {}, summary = "", quiz = [], imageCards = [], video = null, simulation = null, conceptMap = null } = lessonData || {};
+  const mergedContentBlocks = Array.isArray(contentBlocks) && contentBlocks.length
+    ? contentBlocks
+    : (Array.isArray(lessonData?.contentBlocks) ? lessonData.contentBlocks : []);
+  const exportId = `scorm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const orgId = `org-${exportId}`;
+  const itemId = `item-${exportId}`;
+  const resId = `res-${exportId}`;
 
   const escapeXml = (value) => String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -119,7 +126,7 @@ function generateSCORM(lessonData) {
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&apos;");
 
-  const payload = JSON.stringify({ lesson, summary, quiz, imageCards, video, simulation, conceptMap })
+  const payload = JSON.stringify({ lesson, summary, quiz, imageCards, video, simulation, conceptMap, contentBlocks: mergedContentBlocks })
     .replace(/</g, "\\u003c")
     .replace(/<\/script/gi, "<\\/script");
 
@@ -529,12 +536,14 @@ body {
   align-items: center;
   gap: 10px;
   background: #fff;
-  border: 1px solid #e2e8f0;
+  border: 2px solid #e2e8f0;
   border-radius: 12px;
   padding: 11px 13px;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
-.quiz-card .q-option.is-selected { border-color: var(--purple); background: #faf5ff; }
+.quiz-card .q-option:hover { border-color: #cbd5e1; background: #f9fafb; }
+.quiz-card .q-option.is-selected { border-color: var(--purple); background: #faf5ff; font-weight: 600; box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1); }
 .quiz-card .q-feedback {
   margin-top: 12px;
   border-radius: 12px;
@@ -712,6 +721,50 @@ body {
     return '<div class="card" id="map"><div class="card__header"><div class="card__icon">🗺️</div><div class="card__title">خريطة المفاهيم</div></div><div class="card__body">' + content + '</div></div>';
   }
 
+  function renderAdditionalContent(blocks) {
+    if (!Array.isArray(blocks) || !blocks.length) return "";
+    var html = '<div class="card" id="additional-content"><div class="card__header"><div class="card__icon">➕</div><div class="card__title">محتوى إضافي</div></div><div class="card__body">';
+    for (var i = 0; i < blocks.length; i++) {
+      var block = blocks[i];
+      var blockType = block.type || 'text';
+      if (blockType === 'text' && block.content) {
+        html += '<div style="margin-bottom:14px;padding:12px;background:#f8fafc;border-right:3px solid #7c3aed;border-radius:6px"><p style="margin:0;line-height:1.8">' + nl2br(block.content) + '</p></div>';
+      } else if (blockType === 'image') {
+        if (block.svg && block.svg.indexOf && block.svg.indexOf('<svg') >= 0) {
+          html += '<div style="margin-bottom:14px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;background:#fff">' + block.svg + (block.caption ? '<p style="margin:0;padding:8px 10px;font-size:13px;color:#666;border-top:1px solid #e5e7eb">' + escapeHtml(block.caption) + '</p>' : '') + '</div>';
+        } else if (block.url) {
+          html += '<div style="margin-bottom:14px"><img src="' + escapeHtml(block.url) + '" alt="' + escapeHtml(block.caption || block.title || 'صورة') + '" style="max-width:100%;border-radius:8px;border:1px solid #e5e7eb" />' + (block.caption ? '<p style="margin:6px 0 0;font-size:13px;color:#666">' + escapeHtml(block.caption) + '</p>' : '') + '</div>';
+        }
+      } else if (blockType === 'chart' && block.svg) {
+        html += '<div style="margin-bottom:14px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;background:#fff">' + block.svg + (block.caption ? '<p style="margin:0;padding:8px 10px;font-size:13px;color:#666;border-top:1px solid #e5e7eb">' + escapeHtml(block.caption) + '</p>' : '') + '</div>';
+      } else if (blockType === 'video' && (block.url || block.embedUrl)) {
+        var videoUrl = embedUrl(block.embedUrl || block.url);
+        html += '<div style="margin-bottom:14px"><div style="position:relative;width:100%;padding-bottom:56.25%;overflow:hidden;border-radius:8px"><iframe src="' + escapeHtml(videoUrl) + '" style="position:absolute;top:0;left:0;width:100%;height:100%;border:none" allowfullscreen loading="lazy"></iframe></div></div>';
+      } else if (blockType === 'quiz' && Array.isArray(block.questions)) {
+        html += '<div class="card quiz-card" style="margin-bottom:14px;border:1px solid #e5e7eb"><div class="card__header" style="background:#f3f4f6"><div class="card__icon">✏️</div><div class="card__title">' + escapeHtml(block.title || 'اختبار إضافي') + '</div></div><div class="card__body">';
+        for (var q = 0; q < block.questions.length; q++) {
+          var question = block.questions[q];
+          var qKey = 'addon-q-' + i + '-' + q;
+          var selectedAnswer = state.quizAnswers[qKey];
+          var feedback = '';
+          if (selectedAnswer && selectedAnswer.submitted) {
+            feedback = '<div class="q-feedback ' + (selectedAnswer.correct ? 'is-correct' : 'is-wrong') + '">' + (selectedAnswer.correct ? '✓ إجابة صحيحة' : ('✗ الإجابة الصحيحة: ' + escapeHtml(question.answer || 'غير محددة'))) + (question.explanation ? '<br />' + escapeHtml(question.explanation) : '') + '</div>';
+          }
+          var prompt = question.question || question.text || question.prompt || '';
+          html += '<div class="question"><p class="q-title">س' + (q + 1) + ': ' + escapeHtml(prompt) + '</p><div class="q-options">' +
+            (Array.isArray(question.options) ? question.options.map(function(opt, optIndex) {
+              var isSelected = selectedAnswer && selectedAnswer.selected === optIndex;
+              return '<label class="q-option' + (isSelected ? ' is-selected' : '') + '"><input class="visually-hidden" type="radio" name="' + qKey + '" value="' + optIndex + '" ' + (isSelected ? 'checked' : '') + ' data-addon-quiz-option="' + qKey + ':' + optIndex + '" /><span>' + escapeHtml(opt) + '</span></label>';
+            }).join('') : '') +
+            '</div>' + feedback + '</div>';
+        }
+        html += '<div class="sim-actions"><button class="button button--primary" data-submit-addon-quiz="' + i + '">إرسال الإجابات</button></div><div id="addon-quiz-score-' + i + '"></div></div></div>';
+      }
+    }
+    html += '</div></div>';
+    return html;
+  }
+
   function renderSummary(summary) {
     return '<div class="card"><div class="card__header"><div class="card__icon">📋</div><div class="card__title">ملخص الدرس</div></div><div class="card__body"><div class="summary-text">' + nl2br(summary || 'لا يوجد ملخص.') + '</div></div></div>';
   }
@@ -779,6 +832,7 @@ body {
             renderObjectives(objectives) +
             renderSections(sections) +
             renderInteractiveCards(cards) +
+            renderAdditionalContent(state.lessonData.contentBlocks || []) +
             renderVideo(state.lessonData.video) +
             renderSimulation() +
             renderConceptMap(state.lessonData.conceptMap) +
@@ -823,6 +877,7 @@ body {
         var qIndex = Number(parts[0]);
         var optIndex = Number(parts[1]);
         state.quizAnswers[qIndex] = { selected: optIndex, submitted: false, correct: false };
+        render();
       });
     });
 
@@ -843,6 +898,37 @@ body {
         render();
       });
     }
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-addon-quiz-option]'), function (input) {
+      input.addEventListener('change', function () {
+        var parts = input.getAttribute('data-addon-quiz-option').split(':');
+        var qKey = parts[0];
+        var optIndex = Number(parts[1]);
+        state.quizAnswers[qKey] = { selected: optIndex, submitted: false, correct: false };
+        render();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-submit-addon-quiz]'), function (button) {
+      button.addEventListener('click', function () {
+        var addonIndex = Number(button.getAttribute('data-submit-addon-quiz'));
+        var blocks = Array.isArray(state.lessonData.contentBlocks) ? state.lessonData.contentBlocks : [];
+        var block = blocks[addonIndex];
+        if (!block || block.type !== 'quiz' || !Array.isArray(block.questions)) return;
+        block.questions.forEach(function (q, qIndex) {
+          var qKey = 'addon-q-' + addonIndex + '-' + qIndex;
+          var answer = state.quizAnswers[qKey] || { selected: -1 };
+          var selectedOption = (q.options || [])[answer.selected] || '';
+          state.quizAnswers[qKey] = {
+            selected: answer.selected,
+            submitted: true,
+            correct: selectedOption === q.answer,
+          };
+        });
+        updateScormScore();
+        render();
+      });
+    });
 
     Array.prototype.forEach.call(document.querySelectorAll('[data-sim-choice]'), function (button) {
       button.addEventListener('click', function () {
@@ -954,20 +1040,20 @@ body {
 `;
 
   const manifest = `<?xml version="1.0" encoding="UTF-8"?>
-<manifest identifier="ai-lesson" version="1.0"
+<manifest identifier="${exportId}" version="1.0"
   xmlns="http://www.imsproject.org/xsd/imscp_rootv1p1p2"
   xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2">
   <metadata><schema>ADL SCORM</schema><schemaversion>1.2</schemaversion></metadata>
-  <organizations default="org1">
-    <organization identifier="org1">
-      <title>${escapeXml(lesson.title)}</title>
-      <item identifier="item1" identifierref="res1">
-        <title>${escapeXml(lesson.title)}</title>
+  <organizations default="${orgId}">
+    <organization identifier="${orgId}">
+      <title>${escapeXml(lesson.title || "درس تفاعلي")}</title>
+      <item identifier="${itemId}" identifierref="${resId}">
+        <title>${escapeXml(lesson.title || "درس تفاعلي")}</title>
       </item>
     </organization>
   </organizations>
   <resources>
-    <resource identifier="res1" type="webcontent" adlcp:scormtype="sco" href="index.html">
+    <resource identifier="${resId}" type="webcontent" adlcp:scormtype="sco" href="index.html">
       <file href="index.html"/>
       <file href="styles.css"/>
       <file href="script.js"/>
@@ -978,9 +1064,9 @@ body {
   return { indexHTML, stylesCSS, scriptJS, manifest };
 }
 
-async function downloadSCORM(lessonData) {
+async function downloadSCORM(lessonData, contentBlocks = []) {
   const { default: JSZip } = await import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm");
-  const { indexHTML, stylesCSS, scriptJS, manifest } = generateSCORM(lessonData);
+  const { indexHTML, stylesCSS, scriptJS, manifest } = generateSCORM(lessonData, contentBlocks);
   const zip = new JSZip();
   zip.file("imsmanifest.xml", manifest);
   zip.file("index.html", indexHTML);
@@ -990,7 +1076,8 @@ async function downloadSCORM(lessonData) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${lessonData.lesson.title || "lesson"}-scorm.zip`;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  a.download = `${lessonData.lesson.title || "lesson"}-scorm-${stamp}.zip`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -1112,6 +1199,8 @@ function TextModal({ file, onClose }) {
   const [extractedText, setExtractedText] = useState(null);
   const [translatedText, setTranslatedText] = useState(null);
   const [lessonData, setLessonData] = useState(null);
+  const [contentBlocks, setContentBlocks] = useState([]);
+  const contentBlocksRef = useRef([]);
   const [loading, setLoading] = useState(false);
   const [translating, setTranslating] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -1184,14 +1273,27 @@ function TextModal({ file, onClose }) {
       if (!res.ok) {
         throw new Error(buildGenerationErrorMessage(data, res.status, "فشل إنشاء الدرس"));
       }
+      contentBlocksRef.current = [];
+      setContentBlocks([]);
       setLessonData(data);
       setTab("lesson");
     } catch (e) { setError(e.message); }
     finally { setGenerating(false); setGenStatus(""); }
   };
+
+  const handleContentBlocksChange = (nextValue) => {
+    const nextBlocks = typeof nextValue === "function"
+      ? nextValue(Array.isArray(contentBlocksRef.current) ? contentBlocksRef.current : [])
+      : nextValue;
+    const safeBlocks = Array.isArray(nextBlocks) ? nextBlocks : [];
+    contentBlocksRef.current = safeBlocks;
+    setContentBlocks(safeBlocks);
+  };
+
   const handleDownloadSCORM = async () => {
     setDownloading(true);
-    try { await downloadSCORM(lessonData); }
+    const blocksForExport = Array.isArray(contentBlocksRef.current) ? contentBlocksRef.current : [];
+    try { await downloadSCORM(lessonData, blocksForExport); }
     catch (e) { setError("فشل تحميل SCORM: " + e.message); }
     finally { setDownloading(false); }
   };
@@ -1328,7 +1430,7 @@ function TextModal({ file, onClose }) {
               {buildFallbackNotice(lessonData)}
             </div>
           )}
-          {tab === "lesson" && lessonData && <LessonPage lessonData={lessonData} />}
+          {tab === "lesson" && lessonData && <LessonPage lessonData={lessonData} contentBlocks={contentBlocks} setContentBlocks={handleContentBlocksChange} onContentBlocksChange={handleContentBlocksChange} />}
         </div>
         <div style={modal.footer}>
           {tab === "original" && !translatedText && (

@@ -950,6 +950,7 @@ const POLLY_VOICES = [
 function useAudioReader(lesson, summary) {
   const [speaking, setSpeaking] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [audioError, setAudioError] = useState("");
   const [selectedVoice, setSelectedVoice] = useState("Hala");
   const audioRef = useRef(null);
   const abortRef = useRef(null);
@@ -982,6 +983,7 @@ function useAudioReader(lesson, summary) {
 
   const toggle = async () => {
     if (speaking || loading) { stop(); return; }
+    setAudioError("");
     setLoading(true);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -998,6 +1000,9 @@ function useAudioReader(lesson, summary) {
         throw new Error(err.error || "فشل تحميل الصوت");
       }
       const blob = await res.blob();
+      if (!blob || blob.size === 0 || !String(blob.type || "").startsWith("audio/")) {
+        throw new Error("تم استلام استجابة غير صوتية من الخادم");
+      }
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current = audio;
@@ -1005,11 +1010,12 @@ function useAudioReader(lesson, summary) {
       audio.onerror = () => { setSpeaking(false); setLoading(false); URL.revokeObjectURL(url); };
       setLoading(false);
       setSpeaking(true);
-      audio.play();
+      await audio.play();
     } catch (err) {
       if (err.name !== "AbortError") {
         console.error("TTS error:", err);
         setSpeaking(false);
+        setAudioError(err.message || "تعذر تشغيل الصوت");
       }
       setLoading(false);
     }
@@ -1018,10 +1024,10 @@ function useAudioReader(lesson, summary) {
   // Stop on unmount
   useEffect(() => () => stop(), []);
 
-  return { speaking, loading, toggle, selectedVoice, setSelectedVoice };
+  return { speaking, loading, toggle, selectedVoice, setSelectedVoice, audioError };
 }
 
-export default function LessonPage({ lessonData, onClose }) {
+export default function LessonPage({ lessonData, onClose, onContentBlocksChange, contentBlocks: externalContentBlocks, setContentBlocks: setExternalContentBlocks }) {
   const { lesson, summary, quiz: questions, images, imageCards, video, simulation, conceptMap } = lessonData;
   
   console.log("LessonPage:", { hasSimulation: !!simulation, simSteps: simulation?.steps?.length, hasImageCards: !!imageCards });
@@ -1030,11 +1036,34 @@ export default function LessonPage({ lessonData, onClose }) {
   const [answers, setAnswers] = useState([]);
   const [streak, setStreak] = useState(0);
   const [structuredLesson, setStructuredLesson] = useState(() => buildStructuredLessonData(lesson, summary, imageCards, video, simulation));
-  const [contentBlocks, setContentBlocks] = useState([]);
+  const [internalContentBlocks, setInternalContentBlocks] = useState([]);
   const [showToolbar, setShowToolbar] = useState(true);
   const [editingBlock, setEditingBlock] = useState(null);
   const [draggedBlock, setDraggedBlock] = useState(null);
-  const { speaking, loading, toggle, selectedVoice, setSelectedVoice } = useAudioReader(lesson, summary);
+  const { speaking, loading, toggle, selectedVoice, setSelectedVoice, audioError } = useAudioReader(lesson, summary);
+
+  const contentBlocks = Array.isArray(externalContentBlocks) ? externalContentBlocks : internalContentBlocks;
+  const setContentBlocks = (nextValue) => {
+    if (setExternalContentBlocks) {
+      if (typeof nextValue === "function") {
+        setExternalContentBlocks((prev) => {
+          const safePrev = Array.isArray(prev) ? prev : [];
+          return nextValue(safePrev);
+        });
+      } else {
+        setExternalContentBlocks(nextValue);
+      }
+      return;
+    }
+    setInternalContentBlocks(nextValue);
+  };
+
+  // تحديث الخارج بـ contentBlocks الجديدة
+  useEffect(() => {
+    if (onContentBlocksChange) {
+      onContentBlocksChange(contentBlocks);
+    }
+  }, [contentBlocks, onContentBlocksChange]);
 
   useEffect(() => {
     setStructuredLesson(buildStructuredLessonData(lesson, summary, imageCards, video, simulation));
@@ -1060,7 +1089,7 @@ export default function LessonPage({ lessonData, onClose }) {
         return;
       }
       const newBlock = { ...block, id: block.id || Date.now() };
-      setContentBlocks([...contentBlocks, newBlock]);
+      setContentBlocks((prev) => [...prev, newBlock]);
       console.log("[LessonPage] Block added successfully:", newBlock.type);
     } catch (error) {
       console.error("[LessonPage] Error adding content block:", error.message);
@@ -1240,13 +1269,13 @@ export default function LessonPage({ lessonData, onClose }) {
         },
       }));
     } else {
-      setContentBlocks(contentBlocks.map(b => b.id === updatedBlock.id ? updatedBlock : b));
+      setContentBlocks((prev) => prev.map(b => b.id === updatedBlock.id ? updatedBlock : b));
     }
     setEditingBlock(null);
   };
 
   const handleDeleteBlock = (blockId) => {
-    setContentBlocks(contentBlocks.filter(b => b.id !== blockId));
+    setContentBlocks((prev) => prev.filter(b => b.id !== blockId));
   };
 
   const handleDragStart = (block) => {
@@ -1264,6 +1293,10 @@ export default function LessonPage({ lessonData, onClose }) {
     }
     const draggedIdx = contentBlocks.findIndex(b => b.id === draggedBlock.id);
     const targetIdx = contentBlocks.findIndex(b => b.id === targetBlock.id);
+    if (draggedIdx < 0 || targetIdx < 0) {
+      setDraggedBlock(null);
+      return;
+    }
     const newBlocks = [...contentBlocks];
     [newBlocks[draggedIdx], newBlocks[targetIdx]] = [newBlocks[targetIdx], newBlocks[draggedIdx]];
     setContentBlocks(newBlocks);
@@ -1344,6 +1377,11 @@ export default function LessonPage({ lessonData, onClose }) {
                 <> 🔊 استمع للدرس </>
               )}
             </button>
+          )}
+          {phase === "intro" && audioError && (
+            <div style={{ color: "#ffd1d1", background: "rgba(127,29,29,0.35)", border: "1px solid rgba(248,113,113,0.6)", borderRadius: "10px", padding: "6px 10px", fontSize: "12px", fontWeight: 600 }}>
+              تعذر تشغيل الصوت: {audioError}
+            </div>
           )}
           {phase !== "intro" && (
             <button style={s.headerPhaseBtn} onClick={handleRetry}>↩ البداية</button>
